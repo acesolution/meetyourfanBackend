@@ -1,0 +1,227 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coming Soon - MeetYourFan</title>
+    <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}" >
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            color: #ffffff;
+            background-color: #000000;
+        }
+        iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+            z-index: 1;
+        }
+        .content-container {
+            display: none; /* Hide initially */
+            flex-direction: column;
+            justify-content: flex-start;
+            padding: 20px;
+            max-width: 35%;
+            position: relative;
+            z-index: 2;
+            margin-left: 10%;
+            margin-top: 8%;
+        }
+        .content-container h1 {
+            font-size: 42px;
+            margin-bottom: 8px;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        .content-container p {
+            font-size: 18px;
+            line-height: 1.2;
+            margin-bottom: 60px;
+            color: #ffffff;
+        }
+        #emailForm {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #emailForm input {
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            background-color: #333;
+            color: white;
+            width: 250px;
+        }
+        #emailForm button {
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 20px;
+            background: linear-gradient(45deg, #6a0dad, #a64dbd);
+            color: white;
+            font-weight: bold;
+        }
+        .legal-text {
+            font-size: 12px;
+            margin-top: 10px;
+            color: white;
+        }
+        .footer {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            font-size: 12px;
+            color: #aaa;
+            text-align: center;
+        }
+        .popup {
+            display: none;
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #4CAF50;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            z-index: 3;
+            font-size: 16px;
+        }
+        .popup.error {
+            background-color: #f44336;
+        }
+        @media (max-width: 768px) {
+            .content-container {
+                max-width: 100%;
+                height: 100%;
+                margin-left: 5%;
+                display: flex;
+                justify-content: normal;
+                align-items: center;
+                flex-direction: column;
+                padding: 0;
+                top: 70%;
+                /* margin-bottom: 7%; */
+            }
+            .content-container h1, .content-container p {
+                display: none;
+            }
+            #emailForm {
+                flex-direction: column;
+                gap: 15px;
+                width: 70%;
+            }
+            #emailForm input, #emailForm button {
+                width: 100%;
+            }
+            .footer {
+                left: auto;
+                right: 10px;
+                transform: none;
+                text-align: right;
+            }
+        }
+    </style>
+</head>
+<body>
+    <iframe id="spline-iframe" src="" frameborder="0"></iframe>
+
+    <!-- Content Container for Text and Form -->
+    <div class="content-container" id="content-container">
+
+        <h1>MeetYourFan: Where Influencers and Fans Connect</h1>
+        <p>
+            Are you ready to take your fan experience to the next level? MeetYourFan is coming soon, bringing influencers and fans closer than ever before. Sign up now to be the first to know when we launch! Whether you are a fan eager to connect with your favorite influencers or an influencer excited to meet your fans, MeetYourFan is the place for you.
+            <br>Enter your email and stay tuned!
+        </p>
+        <form id="emailForm" onsubmit="handleSubmit(event)">
+            <input type="email" id="email" name="email" placeholder="Enter your email" required>
+            <button type="submit">Submit</button>
+        </form>
+        <div class="legal-text">
+            By signing up, you agree to receive email communications from MeetYourFan according to our <a href="{% url 'privacy_policy' %}" style="color: #a64dbd;">Privacy Policy</a>.
+        </div>
+    </div>
+
+    <!-- Footer for Copyright -->
+    <div class="footer">
+        MeetYourFan &#169; 2024
+    </div>
+    
+    <!-- Popup Notification -->
+    <div id="popup" class="popup"></div>
+
+    <script>
+        // URLs for desktop and mobile Spline scenes
+        const desktopSceneURL = 'https://my.spline.design/interactiveaiwebsite-43e5bb94fec5de27c987a6eb4c9f4e48/';
+        const mobileSceneURL = 'https://my.spline.design/interactiveaiwebsitecopy-ae24afc3638c2efe476cead0efb06013/';
+
+        // Detect screen size and load appropriate scene
+        document.addEventListener("DOMContentLoaded", function() {
+            const iframe = document.getElementById('spline-iframe');
+            if (window.innerWidth <= 768) {
+                iframe.src = mobileSceneURL;
+            } else {
+                iframe.src = desktopSceneURL;
+            }
+        });
+
+        function handleSubmit(event) {
+            event.preventDefault();
+            const emailInput = document.getElementById('email');
+            const email = emailInput.value;
+
+            fetch('/save-email', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify({ email })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showPopup('Email saved successfully!', false);
+                    emailInput.value = '';
+                } else if (data.message === 'Email already exists') {
+                    showPopup('Email already exists.', true);
+                } else {
+                    showPopup('Failed to save email. Please try again.', true);
+                }
+            })
+            .catch(error => {
+                showPopup('An error occurred. Please try again.', true);
+            });
+        }
+
+        function showPopup(message, isError) {
+            const popup = document.getElementById('popup');
+            popup.textContent = message;
+            popup.classList.toggle('error', isError);
+            popup.style.display = 'block';
+            setTimeout(() => {
+                popup.style.display = 'none';
+            }, 3000);
+        }
+
+        document.getElementById('spline-iframe').addEventListener('load', function() {
+            document.getElementById('content-container').style.display = 'flex'; // Show content-container when Spline scene loads
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!-- templates/verify_email.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Verify Your Email Address</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #ffffff; font-family: Arial, sans-serif;">
+  <!-- Main container table -->
+  <table width="100%" bgcolor="#ffffff" style="padding: 1rem 0;" border="0" cellspacing="0" cellpadding="0">
+    <tr>
+      <td align="center">
+        <!-- Card container -->
+        <table width="400" border="0" cellspacing="0" cellpadding="0"
+               style="background-color: #ffffff; border-radius: 30px; overflow: hidden; 
+                      border: 1px solid rgba(0, 0, 0, 0.1); box-shadow: 0 8px 20px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="padding: 2rem;">
+              <!-- Logo -->
+              <div style="text-align: center; margin-bottom: 1.5rem;">
+                <img src="https://meetyourfan.io/static/assets/images/MeetYourFanLogoVertical.png" alt="Logo" style="max-width: 150px;">
+              </div>
+              <!-- Title -->
+              <h2 style="font-size: 24px; color: #000; margin-bottom: 1rem; text-align: center;">
+                Verify Your Email Address
+              </h2>
+              <!-- Intro Text -->
+              <p style="font-size: 16px; color: #333; margin-bottom: 1rem; text-align: center;">
+                Thank you for registering! To complete your registration, please use the verification code below:
+              </p>
+              <!-- Verification Code Display -->
+              <div style="text-align: center; margin: 2rem 0;">
+                <span style="display: inline-block; background-color: #f0f0f0; color: #000; padding: 0.75rem 1.5rem; border-radius: 9999px; font-size: 20px; letter-spacing: 2px; font-weight: bold;">
+                  {{ verification_code }}
+                </span>
+              </div>
+              <!-- Footer Text -->
+              <p style="font-size: 14px; color: #555; text-align: center; line-height: 1.6;">
+                If you did not register for this account, please ignore this email.
+                <br/>
+                <em>This code will expire in 10 minutes.</em>
+              </p>
+            </td>
+          </tr>
+        </table>
+        <!-- End Card container -->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

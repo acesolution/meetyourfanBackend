@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+
+# Virtualenv
+venv/
+myprojectenv/
+
+# Django
+*.sqlite3
+*.log
+media/
+static/
+
+# Environment
+.env
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+
+# Node (if you have a frontend folder here)
+node_modules/
+dist/
+build/
