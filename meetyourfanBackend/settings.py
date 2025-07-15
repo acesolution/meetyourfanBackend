@@ -209,7 +209,7 @@ MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/media/"
 # ——— Static ———
 STATICFILES_STORAGE = "meetyourfanBackend.storage_backends.StaticStorage"
 STATIC_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/static/"
-
+AWS_DEFAULT_ACL = None
 
 
 # no query-string auth (makes URLs cleaner/public)
