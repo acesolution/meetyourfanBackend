@@ -23,7 +23,3 @@ static/
 .idea/
 *.swp
 
-# Node (if you have a frontend folder here)
-node_modules/
-dist/
-build/
