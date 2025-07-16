@@ -223,6 +223,8 @@ AWS_S3_OBJECT_PARAMETERS = {
 # ensure unique names instead of overwriting
 AWS_S3_FILE_OVERWRITE = False
 
+ADMIN_MEDIA_PREFIX = '/static/admin/'
+
 # use the latest signature v4
 AWS_S3_SIGNATURE_VERSION = "s3v4"
 
