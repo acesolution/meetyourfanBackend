@@ -287,6 +287,8 @@ AWS_PRIVATE_KEY_SECRET = os.environ.get(
 )
 
 # (2) fetch it at startup (via the EC2 instance’s IAM role):
+raw = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
+print(">> RAW SECRET:", repr(raw))
 
 PRIVATE_KEY = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
 
