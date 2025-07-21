@@ -9,7 +9,6 @@ import os
 from datetime import timedelta
 import ssl
 from dotenv import load_dotenv
-import sys
 
 # ─── AWS Secrets Manager helper ───────────────────────────────────────────────
 
@@ -287,11 +286,22 @@ AWS_PRIVATE_KEY_SECRET = os.environ.get(
     "/meetyourfan/prod/owner/PRIVATE_KEY"
 )
 
-# (2) fetch it at startup (via the EC2 instance’s IAM role):
-raw = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
-print(">> RAW SECRET:", repr(raw))
+import json
 
-PRIVATE_KEY = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
+raw = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
+# parse the JSON you stored
+blob = json.loads(raw)
+hexkey = blob.get("PRIVATE_KEY")
+if not hexkey:
+    raise ValueError(f"No PRIVATE_KEY field in secret {AWS_PRIVATE_KEY_SECRET!r}")
+# strip whitespace, leading 0x, validate length
+hexkey = hexkey.strip()
+if hexkey.startswith("0x"):
+    hexkey = hexkey[2:]
+if len(hexkey) != 64 or any(c not in "0123456789abcdefABCDEF" for c in hexkey):
+    raise ValueError(f"Bad private‐key format: {hexkey!r}")
+# put it back into 0x form for web3
+PRIVATE_KEY = "0x" + hexkey
 
 # BLOCKCHAIN
 WEB3_PROVIDER_URL = os.environ['WEB3_PROVIDER_URL']
@@ -303,7 +313,3 @@ CONVERSION_RATE = int(os.environ.get('CONVERSION_RATE', 10))
 
 
 
-
-
-# This will show up in `journalctl -u daphne.service -f` or your stdout logs:
-sys.stderr.write(f"[DEBUG] RAW AWS secret for {AWS_PRIVATE_KEY_SECRET!r}: {raw!r}\n")
