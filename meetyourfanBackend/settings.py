@@ -134,7 +134,7 @@ TEMPLATES = [
 
 ASGI_APPLICATION = "meetyourfanBackend.asgi.application"
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get("REDIS_URL")
 
 CHANNEL_LAYERS = {
     "default": {
@@ -294,7 +294,6 @@ PRIVATE_KEY = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
 WEB3_PROVIDER_URL = os.environ['WEB3_PROVIDER_URL']
 CONTRACT_ADDRESS = os.environ['CONTRACT_ADDRESS']
 CONTRACT_ABI_PATH = BASE_DIR / "blockchain" / "contract_abi.json"
-PRIVATE_KEY = os.environ.get('PRIVATE_KEY', '')
 WERT_SC_SIGNER_KEY = os.environ.get('WERT_SC_SIGNER_KEY', '')
 OWNER_ADDRESS = os.environ.get('OWNER_ADDRESS', '')
 CONVERSION_RATE = int(os.environ.get('CONVERSION_RATE', 10))
