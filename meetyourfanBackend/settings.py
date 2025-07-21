@@ -9,7 +9,7 @@ import os
 from datetime import timedelta
 import ssl
 from dotenv import load_dotenv
-import logging
+import sys
 
 # ─── AWS Secrets Manager helper ───────────────────────────────────────────────
 
@@ -36,9 +36,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env file into environment variables
 load_dotenv(BASE_DIR / '.env')
-logger = logging.getLogger(__name__)
-
-
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
@@ -308,5 +305,5 @@ CONVERSION_RATE = int(os.environ.get('CONVERSION_RATE', 10))
 
 
 
-# log it for inspection (ONLY while debugging — remove before prod)
-logger.debug("AWS raw secret for %s: %r", AWS_PRIVATE_KEY_SECRET, raw)
+# This will show up in `journalctl -u daphne.service -f` or your stdout logs:
+sys.stderr.write(f"[DEBUG] RAW AWS secret for {AWS_PRIVATE_KEY_SECRET!r}: {raw!r}\n")
