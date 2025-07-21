@@ -188,13 +188,13 @@ AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',  # Fallback backend.
 ]
 
-EMAIL_BACKEND = 'backend.email.EmailBackend'
-EMAIL_HOST = os.environ['EMAIL_HOST']
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))  
-EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'False') == 'True'
-EMAIL_HOST_USER = os.environ['EMAIL_HOST_USER']
+EMAIL_BACKEND       = os.environ['EMAIL_BACKEND']
+EMAIL_HOST          = os.environ['EMAIL_HOST']
+EMAIL_PORT          = int(os.environ['EMAIL_PORT'])
+EMAIL_USE_TLS       = os.environ.get('EMAIL_USE_TLS','False') == 'True'
+EMAIL_HOST_USER     = os.environ['EMAIL_HOST_USER']
 EMAIL_HOST_PASSWORD = os.environ['EMAIL_HOST_PASSWORD']
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
+DEFAULT_FROM_EMAIL  = os.environ['DEFAULT_FROM_EMAIL']
 
 
 DEFAULT_FILE_STORAGE = "meetyourfanBackend.storage_backends.MediaStorage"
