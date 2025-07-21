@@ -10,6 +10,26 @@ from datetime import timedelta
 import ssl
 from dotenv import load_dotenv
 
+# ─── AWS Secrets Manager helper ───────────────────────────────────────────────
+
+import boto3
+from botocore.exceptions import ClientError
+
+def get_aws_secret(secret_name: str, region_name: str="us-east-1") -> str:
+    """
+    Fetches the value of a string secret from AWS Secrets Manager.
+    Assumes your EC2 instance has an IAM role with SecretsManagerReadWrite (or at least GetSecretValue) permissions.
+    """
+    session = boto3.session.Session()
+    client  = session.client(service_name="secretsmanager", region_name=region_name)
+    try:
+        resp = client.get_secret_value(SecretId=secret_name)
+    except ClientError as e:
+        # logger.warning("Could not retrieve secret %s: %s", secret_name, e)
+        raise
+    # if you stored a JSON blob, you'd do json.loads(...) here
+    return resp.get("SecretString", "")
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -258,6 +278,17 @@ INSTAGRAM_CLIENT_ID = os.environ['INSTAGRAM_CLIENT_ID']
 INSTAGRAM_CLIENT_SECRET = os.environ['INSTAGRAM_CLIENT_SECRET']
 INSTAGRAM_REDIRECT_URI = os.environ['INSTAGRAM_REDIRECT_URI']
 
+
+
+# (1) read the secret _name_ from your env or hard‐code:
+AWS_PRIVATE_KEY_SECRET = os.environ.get(
+    "AWS_PRIVATE_KEY_SECRET", 
+    "/meetyourfan/prod/owner/PRIVATE_KEY"
+)
+
+# (2) fetch it at startup (via the EC2 instance’s IAM role):
+
+PRIVATE_KEY = get_aws_secret(AWS_PRIVATE_KEY_SECRET)
 
 # BLOCKCHAIN
 WEB3_PROVIDER_URL = os.environ['WEB3_PROVIDER_URL']
