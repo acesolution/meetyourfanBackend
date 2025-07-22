@@ -1,3 +1,4 @@
+#api/urls.py
 from django.urls import path
 from .views import (
     RegisterView,
@@ -71,4 +72,4 @@ urlpatterns = [
     path('social-links/<int:pk>/', SocialMediaLinkDetailAPIView.as_view(), name='social-links-detail'),
     path('guest/campaign/purchase/', GuestCampaignPurchaseView.as_view(), name='guest-campaign-purchase'),
 
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]

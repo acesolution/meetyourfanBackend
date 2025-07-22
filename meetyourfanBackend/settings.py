@@ -213,17 +213,20 @@ CELERY_BROKER_URL = os.environ["CELERY_BROKER_URL"]
 CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 
+
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
+
+CLOUDFRONT_DOMAIN = os.environ["CLOUDFRONT_DOMAIN"]
 
 
 # build a public URL for S3 objects
 AWS_S3_CUSTOM_DOMAIN = f"{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com"
 
 # this is what {{ obj.file.url }} will become
-MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/media/"
+MEDIA_URL = f"https://{CLOUDFRONT_DOMAIN}/"
 
 
 # ——— Static ———
