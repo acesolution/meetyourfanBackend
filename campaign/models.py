@@ -19,7 +19,7 @@ class Campaign(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="base_campaigns"
     )
     title = models.CharField(max_length=200)
-    banner_image = models.ImageField(upload_to='campaign_banners/')
+    banner_image = models.ImageField(upload_to='media/public/campaign_banners/')
     campaign_type = models.CharField(max_length=20, choices=CAMPAIGN_TYPE_CHOICES)
     deadline = models.DateTimeField()
     details = models.TextField()
@@ -81,7 +81,7 @@ class TicketCampaign(Campaign):
 class MediaSellingCampaign(Campaign):
     media_cost = models.DecimalField(max_digits=10, decimal_places=2)
     total_media = models.PositiveIntegerField()
-    media_file = models.FileField(upload_to='campaign_media/', blank=True, null=True)
+    media_file = models.FileField(upload_to='media/private/campaign_media/', blank=True, null=True)
 
 
 class MeetAndGreetCampaign(Campaign):
