@@ -9,7 +9,7 @@ class PublicMediaStorage(S3Boto3Storage):
     """Serve public media through CloudFront (no auth required)."""
     # Override the domain so .url() returns your CloudFront host, not raw S3
     custom_domain = settings.CLOUDFRONT_DOMAIN  
-    default_acl = 'public-read'    # objects are uploaded as public
+    default_acl = None    # objects are uploaded as public
     querystring_auth = False       # no AWS auth params in URL
 
     # inherits .url(name) from parent, which simply does: 
@@ -18,7 +18,7 @@ class PublicMediaStorage(S3Boto3Storage):
 class PrivateMediaStorage(S3Boto3Storage):
     """Generate CloudFront‑signed URLs for private media."""
     custom_domain = settings.CLOUDFRONT_DOMAIN
-    default_acl = 'private'        # objects uploaded are private
+    default_acl = None        # objects uploaded are private
     querystring_auth = False       # we’ll use CloudFront signatures instead
 
     def __init__(self, *args, **kwargs):
