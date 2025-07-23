@@ -12,6 +12,14 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 class ChatConsumer(AsyncWebsocketConsumer):
+    def __init__(self, *args, **kwargs):
+        # Call the parent constructor (built‑in __init__ wires up .scope, .channel_layer, etc.)
+        super().__init__(*args, **kwargs)
+        # Pre‑define these so they always exist, even if connect() never runs
+        self.conversation_id = None
+        self.conversation_group_name = None
+        
+        
     async def connect(self):
         """Accept or reject WebSocket connection based on user authentication."""
         self.user = self.scope['user']
@@ -48,11 +56,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """Handle WebSocket disconnection."""
-        logger.info(f"User {self.user.username} disconnected from conversation {self.conversation_id}.")
-        await self.channel_layer.group_discard(
-            self.conversation_group_name,
-            self.channel_name
-        )
+        # getattr is a built‑in that returns a default if the attribute is missing
+        conv_id = getattr(self, 'conversation_id', '<unknown>')
+        group = getattr(self, 'conversation_group_name', None)
+        
+        logger.info(f"User {self.user.username} disconnected from conversation {conv_id}.")
+        
+        # Only discard if we actually joined
+        if group:
+            # group_discard is a built‑in Channels method that removes this channel from the group
+            await self.channel_layer.group_discard(
+                group,
+                self.channel_name
+            )
         
     @sync_to_async
     def get_profile_data(self):
