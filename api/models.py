@@ -45,8 +45,8 @@ class Profile(models.Model):
     name = models.CharField(max_length=100, blank=True, null=True)  # Add name field
     date_of_birth = models.DateField(blank=True, null=True)  # Add date of birth field
     bio = models.TextField(blank=True, null=True)
-    profile_picture = models.ImageField(upload_to='public/profile_pictures/',storage=PublicMediaStorage(), blank=True, null=True)
-    cover_photo = models.ImageField(upload_to='public/cover_photos/',storage=PublicMediaStorage(), blank=True, null=True)
+    profile_picture = models.ImageField(upload_to='media/public/profile_pictures/',storage=PublicMediaStorage(), blank=True, null=True)
+    cover_photo = models.ImageField(upload_to='media/public/cover_photos/',storage=PublicMediaStorage(), blank=True, null=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='public')  # New field
 
     created_at = models.DateTimeField(auto_now_add=True)

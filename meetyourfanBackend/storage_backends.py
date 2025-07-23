@@ -11,6 +11,7 @@ class PublicMediaStorage(S3Boto3Storage):
     custom_domain = settings.CLOUDFRONT_DOMAIN  
     default_acl = None    # objects are uploaded as public
     querystring_auth = False       # no AWS auth params in URL
+    
 
     # inherits .url(name) from parent, which simply does: 
     # return f"https://{self.custom_domain}/{name}"

@@ -80,7 +80,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # If the URL exists and doesn't already start with 'http', prepend the SITE_URL.
             if profile_picture_url and not profile_picture_url.startswith("http"):
                 # Ensure no duplicate slash by stripping the trailing slash from SITE_URL.
-                profile_picture_url = "https://meetyourfan.io" + profile_picture_url
+                profile_picture_url = profile_picture_url
             return {
                 "id": profile.id,
                 "name": profile.name,

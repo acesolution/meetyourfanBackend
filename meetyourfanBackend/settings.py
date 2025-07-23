@@ -110,7 +110,7 @@ REST_FRAMEWORK = {
 
 # Allow your Next.js domain
 CORS_ALLOWED_ORIGINS = [
-    "https://testing.meetyourfan.io",
+    "https://meetyourfan.io",
     "http://localhost:3000",
 ]
 
