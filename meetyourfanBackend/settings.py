@@ -197,7 +197,7 @@ EMAIL_HOST_PASSWORD = os.environ['EMAIL_HOST_PASSWORD']
 DEFAULT_FROM_EMAIL  = os.environ['DEFAULT_FROM_EMAIL']
 
 
-DEFAULT_FILE_STORAGE = "meetyourfanBackend.storage_backends.MediaStorage"
+DEFAULT_FILE_STORAGE = "meetyourfanBackend.storage_backends.PublicMediaStorage"
 
 # pull your keys from env
 AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
