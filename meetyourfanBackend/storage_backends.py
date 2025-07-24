@@ -56,3 +56,16 @@ class PrivateMediaStorage(S3Boto3Storage):
         """Return a datetime 1 hour from now for URL expiry."""
         from datetime import datetime, timedelta
         return datetime.utcnow() + timedelta(hours=1)
+
+
+class StaticStorage(S3Boto3Storage):
+    """
+    Serve all collected static files (ADMIN CSS/JS, your own /static) through CloudFront.
+    - `location` prefixes all object keys (i.e. S3 folder).
+    - `custom_domain` makes `.url()` return your CloudFront URL instead of raw S3.
+    - `querystring_auth=False` omits AWS auth from the URL.
+    """
+    location = 'static'             # maps to your bucket’s ‘static/’ folder
+    default_acl = None              # objects are publicly readable by CloudFront
+    custom_domain = settings.CLOUDFRONT_DOMAIN
+    querystring_auth = False

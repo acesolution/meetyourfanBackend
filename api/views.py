@@ -25,7 +25,8 @@ from api.serializers import (
     EmailSerializer,
     AllUserSerializer,
     SocialMediaLinkSerializer,
-    UserUserIdSerializer
+    UserUserIdSerializer,
+    ProfileImageSerializer
 )
 from django.utils import timezone
 from datetime import timedelta
@@ -502,20 +503,21 @@ class UserProfileUpdateView(APIView):
     
     
 class ProfileImageUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser]  # for file uploads
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]  # To handle file uploads
 
-    def put(self, request):
+    def patch(self, request):
         profile = request.user.profile
-        # Check and update profile picture if provided
-        if 'profile_picture' in request.data:
-            profile.profile_picture = request.data['profile_picture']
-        # Check and update cover photo if provided (if you have such a field)
-        if 'cover_photo' in request.data:
-            profile.cover_photo = request.data['cover_photo']
-        profile.save()
-        # Return updated profile data using the ProfileSerializer (which should include image URLs)
-        serializer = ProfileSerializer(profile, context={'request': request})
+
+        # Use a tiny serializer that only exposes the two image fields:
+        serializer = ProfileImageSerializer(
+            profile,
+            data=request.data,
+            partial=True                 # ← only update the provided fields
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 class InfluencersView(APIView):

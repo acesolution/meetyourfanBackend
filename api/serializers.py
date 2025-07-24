@@ -15,6 +15,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = Profile
         exclude = ['user']
 
+class ProfileImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Profile
+        fields = ['profile_picture', 'cover_photo']
+        # no exclude, we explicitly list just those two
 
 class VerificationCodeSerializer(serializers.ModelSerializer):
     class Meta:
