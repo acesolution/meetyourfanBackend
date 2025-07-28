@@ -47,7 +47,7 @@ import time
 from campaign.utils import select_random_winners, get_or_create_winner_conversation
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
 from django.db import transaction
-from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_campaign_onchain_action
+from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info
 from celery import chain
 
 User = get_user_model()
@@ -307,7 +307,7 @@ class CreateCampaignView(APIView):
 
         chain(
             register_campaign_on_chain.s(campaign.id, seller_id_int),
-            save_campaign_onchain_action.s(request.user.id, campaign.id, {})  
+            save_onchain_action_info.s(request.user.id, campaign.id, {})  
             # built‑in: .s() makes an “immutable signature” so the chain passes tx_hash into the next
         ).apply_async()  # built‑in: schedule the whole chain immediately
 
