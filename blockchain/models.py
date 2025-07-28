@@ -2,9 +2,10 @@
 
 from django.db import models
 from django.conf import settings
-from campaign.models import Campaign
 
 class OnChainBase(models.Model):
+    from campaign.models import Campaign
+    
     """
     Abstract base capturing:
       - user/campaign linkage
