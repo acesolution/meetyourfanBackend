@@ -20,3 +20,32 @@ contract = w3.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
 # 4️⃣ Sanity check at import time
 if not w3.is_connected():
     raise RuntimeError("Cannot connect to WEB3_PROVIDER_URL")
+
+
+def fetch_tx_details(tx_hash: str) -> dict:
+    """
+    Fetch on-chain receipt + original tx fields for the given hash.
+    Raises:
+      - TransactionNotFound: if the tx isn't yet mined.
+    Returns a dict of the metadata we care about.
+    """
+    # ─── Receipt ────────────────────────────────────────────────────────────────
+    # w3.eth.get_transaction_receipt blocks until the tx is mined,
+    # then returns a receipt object with gasUsed, blockNumber, etc.
+    receipt = w3.eth.get_transaction_receipt(tx_hash)
+
+    # ─── Original TX ────────────────────────────────────────────────────────────
+    # w3.eth.get_transaction returns the original tx dict:
+    #   'from', 'to', 'value', 'input', etc.
+    txn = w3.eth.get_transaction(tx_hash)
+
+    return {
+        "block_number":        receipt.blockNumber,
+        "transaction_index":   receipt.transactionIndex,
+        "gas_used":            receipt.gasUsed,
+        "effective_gas_price": receipt.effectiveGasPrice,
+        "from_address":        txn["from"],
+        "to_address":          txn["to"],
+        "value":               txn["value"],
+        "input_data":          txn["input"],
+    }

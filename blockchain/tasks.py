@@ -2,7 +2,7 @@
 
 from celery import shared_task
 from django.conf import settings
-from blockchain.utils import w3, contract
+from blockchain.utils import w3, contract, fetch_tx_details
 from web3.exceptions import ContractLogicError, TimeExhausted
 from rest_framework.response import Response
 from decimal import Decimal
@@ -346,135 +346,97 @@ def withdraw_for_user_task(self, user_id: int, credits_amount: int):
     
     
 
-# ── STEP 1: GENERIC FETCHER ───────────────────────────────────────────────────
-@shared_task(bind=True, max_retries=5, default_retry_delay=20)
-def fetch_tx_details(self, model_name: str, record_id: int) -> str:
-    """
-    1) Waits for the tx to be mined.
-    2) Calls both get_transaction_receipt and get_transaction.
-    3) Populates status + full metadata.
-    """
-    model_map = {
-        'Transaction': Transaction,
-        'InfluencerTransaction': InfluencerTransaction,
-        'OnChainAction': OnChainAction,
-    }
-    Model = model_map.get(model_name)
-    if not Model:
-        return f"Unknown model: {model_name}"
-
-    obj = Model.objects.get(pk=record_id)
-    if not obj.tx_hash:
-        return f"{model_name}({record_id}) has no tx_hash"
-
-    try:
-        # built‑in: waits for the mined receipt or raises TransactionNotFound
-        receipt = w3.eth.get_transaction_receipt(obj.tx_hash)
-    except TransactionNotFound as exc:
-        raise self.retry(exc=exc)
-
-    # built‑in: fetch original tx data
-    tx = w3.eth.get_transaction(obj.tx_hash)
-
-    # Map chain status → our STATUS_CHOICES
-    obj.status            = Model.COMPLETED if receipt.status == 1 else Model.FAILED
-    obj.block_number      = receipt.blockNumber
-    obj.transaction_index = receipt.transactionIndex
-    obj.gas_used          = receipt.gasUsed
-    # built‑in: EIP‑1559 includes .effectiveGasPrice
-    obj.effective_gas_price = getattr(receipt, 'effectiveGasPrice', None)
-
-    # From the original tx object:
-    obj.from_address = tx['from']
-    obj.to_address   = tx.to
-    obj.value        = tx.value
-    obj.input_data   = tx.input
-
-    # If OnChainAction, also decode event args:
-    if model_name == 'OnChainAction':
-        decoded = {}
-        for ev_name, ev_cls in w3.eth.contract.events._events.items():
-            for ev in ev_cls().processReceipt(receipt):
-                decoded.setdefault(ev.event, []).append(dict(ev.args))
-        obj.args = decoded or None
-        update_fields = [
-            'status','block_number','transaction_index',
-            'gas_used','effective_gas_price',
-            'from_address','to_address','value','input_data',
-            'args'
-        ]
-    else:
-        update_fields = [
-            'status','block_number','transaction_index',
-            'gas_used','effective_gas_price',
-            'from_address','to_address','value','input_data'
-        ]
-
-    # built‑in: Model.save(update_fields=…) only writes those cols back to DB
-    obj.save(update_fields=update_fields)
-    return f"{model_name}({record_id}) → {obj.status}"
-
-# ── STEP 2: “SAVE & ENQUEUE” HELPERS ────────────────────────────────────────────
-
-@shared_task(bind=True)
-def save_transaction(
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_transaction_info(
     self,
+    tx_hash: str,
     user_id: int,
-    campaign_id: Optional[int],
+    campaign_id: int,
     tx_type: str,
     tt_amount: int,
     credits_delta: int,
-    tx_hash: str
-) -> int:
-    tx = Transaction.objects.create(
+    email_verified: bool = False,
+    phone_verified: bool = False,
+):
+    """
+    Fetch on‑chain details for a user transaction and save Transaction model.
+    """
+    try:
+        # May raise TransactionNotFound if not yet mined → triggers retry
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        # Celery’s self.retry will re‑enqueue this task after default_retry_delay
+        raise self.retry(exc=exc)
+
+    # Django ORM .objects.create(): INSERT a new row with the given fields
+    Transaction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
+        status=Transaction.COMPLETED,  # mark completed once details fetched
+        tx_hash=tx_hash,
+        **details,                     # unpack block_number, gas_used, etc.
         tx_type=tx_type,
         tt_amount=tt_amount,
         credits_delta=credits_delta,
-        tx_hash=tx_hash,
+        email_verified=email_verified,
+        phone_verified=phone_verified,
     )
-    fetch_tx_details.delay('Transaction', tx.id)
-    return tx.id
 
-
-@shared_task(bind=True)
-def save_influencer_transaction(
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_influencer_transaction_info(
     self,
+    tx_hash: str,
     user_id: int,
-    influencer_id: int,
     campaign_id: int,
+    influencer_id: int,
     transaction_type: str,
     tt_amount: int,
     credits_delta: int,
-    tx_hash: str
-) -> int:
-    itx = InfluencerTransaction.objects.create(
+):
+    """
+    Fetch on‑chain details for an influencer payout/hold/refund and save InfluencerTransaction.
+    """
+    try:
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        raise self.retry(exc=exc)
+
+    InfluencerTransaction.objects.create(
         user_id=user_id,
-        influencer_id=influencer_id,
         campaign_id=campaign_id,
+        status=InfluencerTransaction.COMPLETED,
+        tx_hash=tx_hash,
+        **details,
+        influencer_id=influencer_id,
         transaction_type=transaction_type,
         tt_amount=tt_amount,
         credits_delta=credits_delta,
-        tx_hash=tx_hash,
     )
-    fetch_tx_details.delay('InfluencerTransaction', itx.id)
-    return itx.id
 
-
-@shared_task(bind=True)
-def save_onchain_action(
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_onchain_action_info(
     self,
-    user_id: Optional[int],
-    campaign_id: Optional[int],
+    tx_hash: str,
+    user_id: int,
+    campaign_id: int,
     event_type: str,
-    tx_hash: str
-) -> int:
-    act = OnChainAction.objects.create(
+    args: dict = None,
+):
+    """
+    Fetch on‑chain details for a non‑monetary event (e.g. user_registered),
+    and save OnChainAction.
+    """
+    try:
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        raise self.retry(exc=exc)
+
+    OnChainAction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
-        event_type=event_type,
+        status=OnChainAction.COMPLETED,
         tx_hash=tx_hash,
+        **details,
+        event_type=event_type,
+        args=args or {},
     )
-    fetch_tx_details.delay('OnChainAction', act.id)
-    return act.id
