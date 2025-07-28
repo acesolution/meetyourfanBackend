@@ -9,7 +9,8 @@ from blockchain.utils import w3, contract
 from rest_framework.permissions import IsAuthenticated
 from uuid import uuid4
 from blockchain.models import Transaction, BalanceSnapshot
-from blockchain.tasks import _build_and_send, withdraw_for_user_task
+from blockchain.tasks import _build_and_send, withdraw_for_user_task, save_transaction_info
+from decimal import Decimal
 import logging
 from web3.exceptions import ContractCustomError
 from django.utils import timezone
@@ -374,3 +375,51 @@ class WithdrawUpdateEmailView(APIView):
         )
 
         return Response({"message":"Email updated and withdrawal code sent."})
+
+
+class ConfirmDepositView(APIView):
+    permission_classes = [IsAuthenticated]  # built‑in: only allow logged‑in users
+
+    def post(self, request, *args, **kwargs):
+        # built‑in: DRF parses JSON body into request.data
+        tx_hash = request.data.get('tx_hash')
+        amount  = request.data.get('amount')
+
+        # basic validation
+        if not tx_hash or amount is None:
+            # built‑in: return JSON error + 400 Bad Request
+            return Response(
+                {'error': 'Both tx_hash and amount are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # built‑in: create() both constructs and saves the model in one call
+        tx = Transaction.objects.create(
+            user=request.user,                  # FK to User
+            campaign=None,                      # no campaign for pure deposits
+            status=Transaction.PENDING,         # initial state
+            tx_hash=tx_hash,
+            tx_type=Transaction.DEPOSIT,        # your model constant
+            tt_amount=Decimal(amount),          # convert to Decimal for the field
+            credits_delta=Decimal(amount),
+            email_verified=request.user.email_verified,
+            phone_verified=request.user.phone_verified,
+        )
+
+        # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately
+        save_transaction_info.delay(
+            tx_hash,
+            request.user.id,       # user_id FK
+            None,                  # campaign_id
+            tx.tx_type,            # 'deposit'
+            int(amount),           # tt_amount
+            int(amount),           # credits_delta
+            request.user.email_verified,
+            request.user.phone_verified,
+        )
+
+        # built‑in: return JSON + 201 Created
+        return Response(
+            {'message': 'Deposit recorded; awaiting on‑chain confirmation.'},
+            status=status.HTTP_201_CREATED
+        )

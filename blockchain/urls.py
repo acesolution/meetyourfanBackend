@@ -11,7 +11,8 @@ from .views import (
     WithdrawView,
     WithdrawVerifyRequestCodeView,
     WithdrawVerifyCodeView,
-    WithdrawUpdateEmailView
+    WithdrawUpdateEmailView,
+    ConfirmDepositView
 )
 
 app_name = "blockchain"
@@ -27,4 +28,5 @@ urlpatterns = [
     path("withdraw/verify-code/",  WithdrawVerifyCodeView.as_view()),
     path("withdraw/",              WithdrawView.as_view()),
     path( "withdraw/update-email/", WithdrawUpdateEmailView.as_view(), name="withdraw-update-email"),
+    path('confirm-deposit/', ConfirmDepositView.as_view(), name='confirm-deposit'),
 ]
