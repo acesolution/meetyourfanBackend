@@ -4,8 +4,6 @@ from django.db import models
 from django.conf import settings
 
 class OnChainBase(models.Model):
-    from campaign.models import Campaign
-    
     """
     Abstract base capturing:
       - user/campaign linkage
@@ -29,7 +27,10 @@ class OnChainBase(models.Model):
         help_text="Who initiated this on‑chain TX"
     )
     campaign  = models.ForeignKey(
-        Campaign, null=True, blank=True, on_delete=models.CASCADE,
+        'campaign.Campaign',  # string reference avoids the import cycle
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
         help_text="Optional campaign FK"
     )
 
