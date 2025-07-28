@@ -12,7 +12,8 @@ from .views import (
     WithdrawVerifyRequestCodeView,
     WithdrawVerifyCodeView,
     WithdrawUpdateEmailView,
-    ConfirmDepositView
+    ConfirmDepositView,
+    WertWebhookView
 )
 
 app_name = "blockchain"
@@ -29,4 +30,5 @@ urlpatterns = [
     path("withdraw/",              WithdrawView.as_view()),
     path( "withdraw/update-email/", WithdrawUpdateEmailView.as_view(), name="withdraw-update-email"),
     path('confirm-deposit/', ConfirmDepositView.as_view(), name='confirm-deposit'),
+    path('webhooks/wert/', WertWebhookView.as_view(), name='wert-webhook'),
 ]

@@ -19,6 +19,18 @@ from django.core.mail import send_mail
 from api.models import VerificationCode
 from django.template.loader import render_to_string
 from web3 import Web3
+from django.http import (
+    JsonResponse,
+    HttpResponseBadRequest,
+    HttpResponseForbidden,
+)
+import hmac
+import hashlib
+from django.views import View
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +42,10 @@ GAS_LIMIT    = 200_000
 GAS_PRICE_GWEI = "50"
 SC_ADDRESS = settings.CONTRACT_ADDRESS
 
+# Load your webhook secret from env
+WERT_WEBHOOK_SECRET = os.getenv('WERT_WEBHOOK_SECRET')
+if not WERT_WEBHOOK_SECRET:
+    raise RuntimeError("Missing WERT_WEBHOOK_SECRET in environment")
 
 class RegisterUserView(APIView):
     """
@@ -423,3 +439,92 @@ class ConfirmDepositView(APIView):
             {'message': 'Deposit recorded; awaiting on‑chain confirmation.'},
             status=status.HTTP_201_CREATED
         )
+        
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class WertWebhookView(View):
+    """
+    Class‑based view to handle Wert on‑chain webhooks.
+    """
+
+    # Built‑in: dispatch() routes to get()/post()/etc based on HTTP method.
+    # By decorating dispatch() with csrf_exempt, all sub‑methods skip CSRF.
+    def dispatch(self, request, *args, **kwargs):
+        return super().dispatch(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        # 1) Raw body for signature check
+        raw_body = request.body
+
+        # 2) Grab the HMAC header Wert sends
+        signature = request.META.get('HTTP_X_WERT_SIGNATURE', '')
+        if not signature:
+            return HttpResponseForbidden("Missing signature")
+
+        # 3) Compute our own HMAC‑SHA256 of the raw payload
+        computed = hmac.new(
+            key=WERT_WEBHOOK_SECRET.encode(),
+            msg=raw_body,
+            digestmod=hashlib.sha256
+        ).hexdigest()
+
+        # 4) Compare in constant time
+        if not hmac.compare_digest(computed, signature):
+            return HttpResponseForbidden("Invalid signature")
+
+        # 5) Parse JSON
+        try:
+            event = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return HttpResponseBadRequest("Invalid JSON")
+
+        # 6) Dispatch by event type
+        evt = event.get('event')
+        order_id = event.get('order_id')
+        tx_id    = event.get('tx_id')     # only on confirmed
+        amount   = event.get('amount')
+
+        if evt == 'payment.pending':
+            mark_deposit_pending(order_id, amount)
+
+        elif evt == 'payment.confirmed':
+            mark_deposit_confirmed(order_id, tx_id)
+
+        elif evt == 'payment.failed':
+            mark_deposit_failed(order_id)
+
+        else:
+            # Unrecognized event; you can log it here
+            print("Unhandled Wert event:", evt)
+
+        # 7) Always respond 200 OK to acknowledge receipt
+        return JsonResponse({'ok': True})
+
+    def get(self, request, *args, **kwargs):
+        # Built‑in: if someone tries GET, we reject
+        return HttpResponseBadRequest("Only POST allowed")
+
+
+# ──────────────────────────────────────────────────────────────
+# These are your ORM hooks – replace with real implementations
+# ──────────────────────────────────────────────────────────────
+def mark_deposit_pending(order_id: str, amount: float):
+    # e.g.:
+    # Deposit.objects.update_or_create(
+    #    order_id=order_id,
+    #    defaults={'status': 'pending', 'amount': amount}
+    # )
+    pass
+
+def mark_deposit_confirmed(order_id: str, tx_id: str):
+    # e.g.:
+    # Deposit.objects.filter(order_id=order_id).update(
+    #    status='confirmed',
+    #    tx_id=tx_id
+    # )
+    pass
+
+def mark_deposit_failed(order_id: str):
+    # e.g.:
+    # Deposit.objects.filter(order_id=order_id).update(status='failed')
+    pass
