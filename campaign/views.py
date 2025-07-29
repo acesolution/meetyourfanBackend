@@ -49,7 +49,7 @@ from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_ch
 from django.db import transaction
 from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info, save_transaction_info
 from celery import chain
-from blockchain.models import OnChainAction
+from blockchain.models import OnChainAction, Transaction
 
 User = get_user_model()
 
@@ -420,8 +420,9 @@ class ParticipateInCampaignView(APIView):
         # 5) Compute how many whole TT tokens to spend
         spent_tt_whole = cost_in_credits // conversion_rate
 
-        # 10) Persist participation + gas‐deduction record
-        try:
+        # 1) Wrap all the saves in an atomic block
+        with transaction.atomic():
+            # 2) Persist participation & escrow
             participation = serializer.save(fan=user)
             escrow = EscrowRecord.objects.create(
                 user=user,
@@ -433,62 +434,36 @@ class ParticipateInCampaignView(APIView):
                 tx_hash="",
                 gas_cost_credits=0,
             )
-            CreditSpend.objects.bulk_create(
-                [
-                    CreditSpend(
-                        user=user,
-                        campaign=campaign,
-                        spend_type=CreditSpend.PARTICIPATION,
-                        credits=cost_in_credits,
-                        tt_amount=spent_tt_whole,
-                    ),
-                    CreditSpend(
-                        user=user,
-                        campaign=campaign,
-                        spend_type=CreditSpend.GAS_FEE,
-                        credits=0,
-                        description=f"Gas for tx"
-                    ),
-                ]
-            )
-            
+            CreditSpend.objects.bulk_create([
+                CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.PARTICIPATION,
+                            credits=cost_in_credits, tt_amount=spent_tt_whole),
+                CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.GAS_FEE,
+                            credits=0, description="Gas for tx"),
+            ])
+
+            # 3) After commit, enqueue the on‑chain hold → save chain
             def enqueue_hold():
+                # build the hold task signature
                 hold_sig = hold_for_campaign_on_chain.s(
-                    escrow.id,                      # EscrowRecord PK
-                    campaign.id,                    # Campaign PK
-                    int(request.user.user_id),     # Buyer ID
-                    spent_tt_whole,                 # TT tokens to hold (whole)
-                    cost_in_credits,                # Credits to hold
+                    escrow.id,               # EscrowRecord PK
+                    campaign.id,             # Campaign PK
+                    int(user.user_id),       # On‑chain buyer ID
+                    spent_tt_whole,          # TT tokens to hold
+                    cost_in_credits,         # Credits to hold
                 )
-
-                # 2) Build the second task signature:
-                #    save_transaction_info.s(...) also a signature,
-                #    but with keyword args so positional 0 will be
-                #    filled by the result of the previous task (tx_hash).
+                # build the save task signature; the first arg (tx_hash)
+                # will come from hold_sig’s result automatically
                 save_sig = save_transaction_info.s(
-                    user_id=request.user.id,        # will become arg #1
-                    campaign_id=campaign.id,        # will become arg #2
-                    tx_type="participation",        # arg #3
-                    tt_amount=spent_tt_whole,       # arg #4
-                    credits_delta=cost_in_credits,  # arg #5
+                    user_id=user.id,         # Django PK of the fan
+                    campaign_id=campaign.id,
+                    tx_type=Transaction.SPEND,
+                    tt_amount=spent_tt_whole,
+                    credits_delta=cost_in_credits,
                 )
-
-                # 3) Chain them:
-                #    chain(hold_sig, save_sig) strings them together so that
-                #    when hold_for_campaign_on_chain returns tx_hash,
-                #    save_transaction_info(tx_hash, **kwargs) runs next.
-                workflow = chain(hold_sig, save_sig)
-
-                # 4) apply_async():
-                #    actually sends the tasks to the broker; returns an AsyncResult.
-                result = workflow.apply_async()
+                # chain them and push to the broker
+                chain(hold_sig, save_sig).apply_async()
 
             transaction.on_commit(enqueue_hold)
-
-        except Exception:
-            logger.exception("DB persistence failed")
-            return Response({"error": "Server error while recording participation"}, status=500)
-
         return Response(
             {
                 "message": "Participation successful",
