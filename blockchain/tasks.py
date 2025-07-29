@@ -83,6 +83,17 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
             )
             tx_hash = _build_and_send(fn, tx_params)
             tx_hashes.append(tx_hash)
+            
+            # fire off a Celery job to save this on‑chain action for the influencer
+            save_influencer_transaction_info.delay(
+                tx_hash=tx_hash,
+                user_id=seller_id,           # influencer’s user_id
+                campaign_id=campaign_id,
+                influencer_id=seller_id,
+                transaction_type="release",  # or "release_batch"
+                tt_amount=0,                 # no direct TT change for influencer
+                credits_delta=0,             # likewise
+            )
 
         return tx_hashes
 
@@ -127,6 +138,17 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
             )
             tx_hash = _build_and_send(fn, tx_params)
             tx_hashes.append(tx_hash)
+            
+            # save a refund transaction for the influencer
+            save_influencer_transaction_info.delay(
+                tx_hash=tx_hash,
+                user_id=seller_id,
+                campaign_id=campaign_id,
+                influencer_id=seller_id,
+                transaction_type="refund",
+                tt_amount=0,
+                credits_delta=0,
+            )
 
         return tx_hashes
 
@@ -269,6 +291,19 @@ def hold_for_campaign_on_chain(
         signed = w3.eth.account.sign_transaction(tx, private_key=PK)
         raw    = w3.eth.send_raw_transaction(signed.raw_transaction)
         tx_hash = raw.hex()
+        
+        # ─────────────────────────────────────────────────────────────────
+        # 5) Record the “participation” transaction for the buyer
+        # ─────────────────────────────────────────────────────────────────
+        # this will enqueue a retrying task that waits for the tx to land
+        save_transaction_info.delay(
+            tx_hash=tx_hash,
+            user_id=buyer_id,          # the fan who’s participating
+            campaign_id=campaign_id,
+            tx_type="participation",   # your own label for this kind of tx
+            tt_amount=spent_tt_whole,  # how many TT on‑chain we locked
+            credits_delta=cost_in_credits,
+        )
 
         # 5) Wait for receipt
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
