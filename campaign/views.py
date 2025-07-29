@@ -420,50 +420,41 @@ class ParticipateInCampaignView(APIView):
         # 5) Compute how many whole TT tokens to spend
         spent_tt_whole = cost_in_credits // conversion_rate
 
-        # 1) Wrap all the saves in an atomic block
-        with transaction.atomic():
-            # 2) Persist participation & escrow
-            participation = serializer.save(fan=user)
-            escrow = EscrowRecord.objects.create(
-                user=user,
-                campaign=campaign,
-                campaign_id=str(campaign.id),
+        # 2) Persist participation & escrow
+        participation = serializer.save(fan=user)
+        escrow = EscrowRecord.objects.create(
+            user=user,
+            campaign=campaign,
+            campaign_id=str(campaign.id),
+            tt_amount=spent_tt_whole,
+            credit_amount=cost_in_credits,
+            status="held",
+            tx_hash="",
+            gas_cost_credits=0,
+        )
+        CreditSpend.objects.bulk_create([
+            CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.PARTICIPATION,
+                        credits=cost_in_credits, tt_amount=spent_tt_whole),
+            CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.GAS_FEE,
+                        credits=0, description="Gas for tx"),
+        ])
+
+        chain(
+            hold_for_campaign_on_chain.s(
+                escrow.id,
+                campaign.id,
+                int(user.user_id),
+                spent_tt_whole,
+                cost_in_credits,
+            ),
+            save_transaction_info.si(
+                user_id=user.id,
+                campaign_id=campaign.id,
+                tx_type=Transaction.SPEND,
                 tt_amount=spent_tt_whole,
-                credit_amount=cost_in_credits,
-                status="held",
-                tx_hash="",
-                gas_cost_credits=0,
-            )
-            CreditSpend.objects.bulk_create([
-                CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.PARTICIPATION,
-                            credits=cost_in_credits, tt_amount=spent_tt_whole),
-                CreditSpend(user=user, campaign=campaign, spend_type=CreditSpend.GAS_FEE,
-                            credits=0, description="Gas for tx"),
-            ])
-
-            # 3) After commit, enqueue the on‑chain hold → save chain
-            def enqueue_hold():
-                # build the hold task signature
-                hold_sig = hold_for_campaign_on_chain.s(
-                    escrow.id,               # EscrowRecord PK
-                    campaign.id,             # Campaign PK
-                    int(user.user_id),       # On‑chain buyer ID
-                    spent_tt_whole,          # TT tokens to hold
-                    cost_in_credits,         # Credits to hold
-                )
-                # build the save task signature; the first arg (tx_hash)
-                # will come from hold_sig’s result automatically
-                save_sig = save_transaction_info.si(
-                    user_id=user.id,         # Django PK of the fan
-                    campaign_id=campaign.id,
-                    tx_type=Transaction.SPEND,
-                    tt_amount=spent_tt_whole,
-                    credits_delta=cost_in_credits,
-                )
-                # chain them and push to the broker
-                chain(hold_sig, save_sig).apply_async()
-
-            transaction.on_commit(enqueue_hold)
+                credits_delta=cost_in_credits,
+            ),
+        ).apply_async()
         return Response(
             {
                 "message": "Participation successful",
