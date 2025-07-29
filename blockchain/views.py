@@ -430,8 +430,6 @@ class ConfirmDepositView(APIView):
             tx.tx_type,            # 'deposit'
             int(amount),           # tt_amount
             int(amount),           # credits_delta
-            request.user.email_verified,
-            request.user.phone_verified,
         )
 
         # built‑in: return JSON + 201 Created
