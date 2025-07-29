@@ -418,8 +418,6 @@ class ConfirmDepositView(APIView):
             tx_type=Transaction.DEPOSIT,        # your model constant
             tt_amount=Decimal(amount),          # convert to Decimal for the field
             credits_delta=Decimal(amount),
-            email_verified=request.user.email_verified,
-            phone_verified=request.user.phone_verified,
         )
 
         # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately

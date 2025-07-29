@@ -12,6 +12,7 @@ from .models import Transaction, InfluencerTransaction, OnChainAction
 from typing import Optional
 from web3.exceptions import TransactionNotFound
 
+
 logger = logging.getLogger(__name__)
 
 OWNER          = settings.OWNER_ADDRESS
