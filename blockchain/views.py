@@ -160,8 +160,8 @@ class MyBalancesView(APIView):
 
         # Return integer token/credit counts
         return Response({
-            "tt_balance":     tt_bal,      # e.g. 2
-            "credit_balance": credit_bal   # e.g. 20
+            "tt_balance":     str(tt_bal),      # e.g. 2
+            "credit_balance": str(credit_bal)   # e.g. 20
         })
 
 
