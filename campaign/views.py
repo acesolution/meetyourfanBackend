@@ -47,7 +47,7 @@ import time
 from campaign.utils import select_random_winners, get_or_create_winner_conversation
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
 from django.db import transaction
-from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info
+from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info, save_transaction_info
 from celery import chain
 from blockchain.models import OnChainAction
 
@@ -453,15 +453,37 @@ class ParticipateInCampaignView(APIView):
             )
             
             def enqueue_hold():
-                logger.info(f"📮 Enqueuing on-chain hold for escrow {escrow.id}")
-                result = hold_for_campaign_on_chain.delay(
-                    escrow.id,
-                    campaign.id,
-                    int(request.user.user_id),
-                    spent_tt_whole,
-                    cost_in_credits,
+                hold_sig = hold_for_campaign_on_chain.s(
+                    escrow.id,                      # EscrowRecord PK
+                    campaign.id,                    # Campaign PK
+                    int(request.user.user_id),     # Buyer ID
+                    spent_tt_whole,                 # TT tokens to hold (whole)
+                    cost_in_credits,                # Credits to hold
                 )
-                logger.info(f"🚀 Task ID: {result.id}")
+
+                # 2) Build the second task signature:
+                #    save_transaction_info.s(...) also a signature,
+                #    but with keyword args so positional 0 will be
+                #    filled by the result of the previous task (tx_hash).
+                save_sig = save_transaction_info.s(
+                    user_id=request.user.id,        # will become arg #1
+                    campaign_id=campaign.id,        # will become arg #2
+                    tx_type="participation",        # arg #3
+                    tt_amount=spent_tt_whole,       # arg #4
+                    credits_delta=cost_in_credits,  # arg #5
+                    email_verified=request.user.email_verified,  # kwarg
+                    phone_verified=request.user.phone_verified,  # kwarg
+                )
+
+                # 3) Chain them:
+                #    chain(hold_sig, save_sig) strings them together so that
+                #    when hold_for_campaign_on_chain returns tx_hash,
+                #    save_transaction_info(tx_hash, **kwargs) runs next.
+                workflow = chain(hold_sig, save_sig)
+
+                # 4) apply_async():
+                #    actually sends the tasks to the broker; returns an AsyncResult.
+                result = workflow.apply_async()
 
             transaction.on_commit(enqueue_hold)
 

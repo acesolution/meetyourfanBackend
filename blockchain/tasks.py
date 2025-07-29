@@ -11,7 +11,9 @@ import logging
 from .models import Transaction, InfluencerTransaction, OnChainAction
 from typing import Optional
 from web3.exceptions import TransactionNotFound
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
@@ -47,55 +49,60 @@ def register_user_on_chain(self, user_id):
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
-    """
-    Break a big campaign’s holds into BATCH_SIZE chunks
-    and call releaseHoldsBatch(campaign, seller, start, end) for each.
-    """
     campaign_id = int(campaign_id)
     seller_id   = int(seller_id)
 
     try:
-        # ─── Step 1: fetch the full buyer list ───────────────────────────────
+        # 1) Fetch buyers on‑chain (eth_call, no gas)
         buyers = contract.functions.getCampaignBuyers(campaign_id).call({'from': OWNER})
         total  = len(buyers)
         if total == 0:
             return f"No holders to release for campaign {campaign_id}"
 
-        # ─── Step 2: loop over chunks ────────────────────────────────────────
-        tx_hashes = []
-        base_nonce = w3.eth.get_transaction_count(OWNER)
+        base_nonce = w3.eth.get_transaction_count(OWNER)  # next nonce
+        recorded   = []  # collect for return/debug
+
         for batch_index, start in enumerate(range(0, total, BATCH_SIZE)):
             end = min(start + BATCH_SIZE - 1, total - 1)
 
             tx_params = {
-                "chainId":      w3.eth.chain_id,
-                "from":         OWNER,
-                "nonce":        base_nonce + batch_index,
-                "gas":          GAS_LIMIT,
-                "gasPrice":     w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+                "chainId":  w3.eth.chain_id,                  # current chain ID
+                "from":     OWNER,                            # sender address
+                "nonce":    base_nonce + batch_index,         # avoid collisions
+                "gas":      GAS_LIMIT,
+                "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),  # gwei→wei
             }
 
-            fn = contract.functions.releaseHoldsBatch(
-                campaign_id,
-                seller_id,
-                start,
-                end
-            )
-            tx_hash = _build_and_send(fn, tx_params)
-            tx_hashes.append(tx_hash)
-            
-            # fire off a Celery job to save this on‑chain action for the influencer
-            save_influencer_transaction_info.delay(
-                tx_hash=tx_hash,
-                user_id=seller_id,           # influencer’s user_id
-                campaign_id=campaign_id,
-                influencer_id=seller_id,
-                transaction_type="release",  # or "release_batch"
-                tt_amount=0,                 # no direct TT change for influencer
-                credits_delta=0,             # likewise
-            )
+            # Prepare the batch release function call
+            fn      = contract.functions.releaseHoldsBatch(campaign_id, seller_id, start, end)
+            tx_hash = _build_and_send(fn, tx_params)  # sign & broadcast
 
-        return tx_hashes
+            # Wait for the tx to be mined (blocks until mined)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            # Decode all HoldReleased events from receipt.logs
+            events  = contract.events.HoldReleased().processReceipt(receipt)
+
+            # For each event, enqueue a save task to record InfluencerTransaction
+            for ev in events:
+                # .delay schedules the save task asynchronously
+                save_influencer_transaction_info.delay(
+                    tx_hash=tx_hash,
+                    user_id=User.objects.get(user_id=seller_id).id,  # local FK
+                    campaign_id=campaign_id,
+                    influencer_id=User.objects.get(user_id=seller_id).id,
+                    transaction_type=InfluencerTransaction.RELEASE,
+                    tt_amount=ev.args.netTTWei,
+                    credits_delta=ev.args.netCrWei,
+                )
+
+                recorded.append({
+                    'tx_hash':    tx_hash,
+                    'buyerId':     ev.args.buyerId,
+                    'netTTWei':    ev.args.netTTWei,
+                    'netCrWei':    ev.args.netCrWei,
+                })
+
+        return recorded
 
     except Exception as exc:
         raise self.retry(exc=exc)
@@ -103,58 +110,59 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
-    """
-    Break a big campaign’s holds into BATCH_SIZE chunks
-    and call refundHoldsBatch(campaign, start, end) for each.
-    """
     campaign_id = int(campaign_id)
     seller_id   = int(seller_id)
 
     try:
-        # ─── Step 1: fetch the full buyer list ───────────────────────────────
         buyers = contract.functions.getCampaignBuyers(campaign_id).call({'from': OWNER})
         total  = len(buyers)
         if total == 0:
             return f"No holds to refund for campaign {campaign_id}"
 
-        # ─── Step 2: loop over chunks ────────────────────────────────────────
-        tx_hashes = []
         base_nonce = w3.eth.get_transaction_count(OWNER)
+        recorded   = []
+
         for batch_index, start in enumerate(range(0, total, BATCH_SIZE)):
             end = min(start + BATCH_SIZE - 1, total - 1)
 
             tx_params = {
-                "chainId":      w3.eth.chain_id,
-                "from":         OWNER,
-                "nonce":        base_nonce + batch_index,
-                "gas":          GAS_LIMIT,
-                "gasPrice":     w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+                "chainId":  w3.eth.chain_id,
+                "from":     OWNER,
+                "nonce":    base_nonce + batch_index,
+                "gas":      GAS_LIMIT,
+                "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
             }
 
-            fn = contract.functions.refundHoldsBatch(
-                campaign_id,
-                start,
-                end
-            )
+            fn      = contract.functions.refundHoldsBatch(campaign_id, start, end)
             tx_hash = _build_and_send(fn, tx_params)
-            tx_hashes.append(tx_hash)
-            
-            # save a refund transaction for the influencer
-            save_influencer_transaction_info.delay(
-                tx_hash=tx_hash,
-                user_id=seller_id,
-                campaign_id=campaign_id,
-                influencer_id=seller_id,
-                transaction_type="refund",
-                tt_amount=0,
-                credits_delta=0,
-            )
 
-        return tx_hashes
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            # Note: refund emits HoldRefunded events
+            events  = contract.events.HoldRefunded().processReceipt(receipt)
+
+            for ev in events:
+                save_influencer_transaction_info.delay(
+                    tx_hash=tx_hash,
+                    user_id=User.objects.get(user_id=seller_id).id,
+                    campaign_id=campaign_id,
+                    influencer_id=User.objects.get(user_id=seller_id).id,
+                    transaction_type=InfluencerTransaction.REFUND,
+                    tt_amount=ev.args.ttAmtWei,
+                    credits_delta=ev.args.crAmtWei,
+                )
+
+                recorded.append({
+                    'tx_hash':   tx_hash,
+                    'buyerId':    ev.args.buyerId,
+                    'ttAmtWei':   ev.args.ttAmtWei,
+                    'crAmtWei':   ev.args.crAmtWei,
+                })
+
+        return recorded
 
     except Exception as exc:
         raise self.retry(exc=exc)
-    
+
     
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def register_campaign_on_chain(self, campaign_id, seller_id):
@@ -291,19 +299,6 @@ def hold_for_campaign_on_chain(
         signed = w3.eth.account.sign_transaction(tx, private_key=PK)
         raw    = w3.eth.send_raw_transaction(signed.raw_transaction)
         tx_hash = raw.hex()
-        
-        # ─────────────────────────────────────────────────────────────────
-        # 5) Record the “participation” transaction for the buyer
-        # ─────────────────────────────────────────────────────────────────
-        # this will enqueue a retrying task that waits for the tx to land
-        save_transaction_info.delay(
-            tx_hash=tx_hash,
-            user_id=buyer_id,          # the fan who’s participating
-            campaign_id=campaign_id,
-            tx_type="participation",   # your own label for this kind of tx
-            tt_amount=spent_tt_whole,  # how many TT on‑chain we locked
-            credits_delta=cost_in_credits,
-        )
 
         # 5) Wait for receipt
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -476,3 +471,55 @@ def save_onchain_action_info(
         event_type=event_type,
         args=args or {},
     )
+    
+    
+    
+    
+@shared_task
+def fanout_influencer_refunds(
+    tx_hashes: list,
+    user_id: int,
+    campaign_id: int,
+    influencer_id: int,
+    transaction_type: str,
+):
+    """
+    Celery will call this with tx_hashes = ['0xaaa…', '0xbbb…', ...].
+    We then enqueue one save_influencer_transaction_info per hash.
+    """
+    from .tasks import save_influencer_transaction_info
+
+    for tx in tx_hashes:
+        # `.delay(...)` kicks off each save task asynchronously
+        save_influencer_transaction_info.delay(
+            tx_hash=tx,
+            user_id=user_id,
+            campaign_id=campaign_id,
+            influencer_id=influencer_id,
+            transaction_type=transaction_type,
+            tt_amount=0,        # you can pass real totals here if you want
+            credits_delta=0,
+        )
+
+
+@shared_task
+def fanout_influencer_releases(
+    tx_hashes: list,
+    user_id: int,
+    campaign_id: int,
+    influencer_id: int,
+    transaction_type: str,
+):
+    # identical to above; you could merge into one if you prefer
+    from .tasks import save_influencer_transaction_info
+
+    for tx in tx_hashes:
+        save_influencer_transaction_info.delay(
+            tx_hash=tx,
+            user_id=user_id,
+            campaign_id=campaign_id,
+            influencer_id=influencer_id,
+            transaction_type=transaction_type,
+            tt_amount=0,
+            credits_delta=0,
+        )
