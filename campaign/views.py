@@ -453,7 +453,7 @@ class ParticipateInCampaignView(APIView):
                 )
                 # build the save task signature; the first arg (tx_hash)
                 # will come from hold_sig’s result automatically
-                save_sig = save_transaction_info.s(
+                save_sig = save_transaction_info.si(
                     user_id=user.id,         # Django PK of the fan
                     campaign_id=campaign.id,
                     tx_type=Transaction.SPEND,
