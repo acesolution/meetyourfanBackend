@@ -447,7 +447,7 @@ class ParticipateInCampaignView(APIView):
                 spent_tt_whole,
                 cost_in_credits,
             ),
-            save_transaction_info.si(
+            save_transaction_info.s(
                 user_id=user.id,
                 campaign_id=campaign.id,
                 tx_type=Transaction.SPEND,
