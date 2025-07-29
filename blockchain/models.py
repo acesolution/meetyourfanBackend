@@ -112,7 +112,7 @@ class Transaction(OnChainBase):
 
     
     tx_type       = models.CharField(
-        max_length=10,
+        max_length=66,
         choices=TX_TYPES,
         help_text="deposit/withdraw/spend"
     )

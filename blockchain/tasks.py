@@ -30,6 +30,104 @@ def _build_and_send(fn, tx_params):
     return raw.hex()
 
 
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_transaction_info(
+    self,
+    tx_hash: str,
+    user_id: int,
+    campaign_id: int,
+    tx_type: str,
+    tt_amount: int,
+    credits_delta: int,
+    email_verified: bool = False,
+    phone_verified: bool = False,
+):
+    """
+    Fetch on‑chain details for a user transaction and save Transaction model.
+    """
+    try:
+        # May raise TransactionNotFound if not yet mined → triggers retry
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        # Celery’s self.retry will re‑enqueue this task after default_retry_delay
+        raise self.retry(exc=exc)
+
+    # Django ORM .objects.create(): INSERT a new row with the given fields
+    Transaction.objects.create(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        status=Transaction.COMPLETED,  # mark completed once details fetched
+        tx_hash=tx_hash,
+        **details,                     # unpack block_number, gas_used, etc.
+        tx_type=tx_type,
+        tt_amount=tt_amount,
+        credits_delta=credits_delta,
+        email_verified=email_verified,
+        phone_verified=phone_verified,
+    )
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_influencer_transaction_info(
+    self,
+    tx_hash: str,
+    user_id: int,
+    campaign_id: int,
+    influencer_id: int,
+    transaction_type: str,
+    tt_amount: int,
+    credits_delta: int,
+):
+    """
+    Fetch on‑chain details for an influencer payout/hold/refund and save InfluencerTransaction.
+    """
+    try:
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        raise self.retry(exc=exc)
+
+    InfluencerTransaction.objects.create(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        status=InfluencerTransaction.COMPLETED,
+        tx_hash=tx_hash,
+        **details,
+        influencer_id=influencer_id,
+        transaction_type=transaction_type,
+        tt_amount=tt_amount,
+        credits_delta=credits_delta,
+    )
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def save_onchain_action_info(
+    self,
+    tx_hash: str,
+    user_id: int,
+    campaign_id: int,
+    event_type: str,
+    args: dict = None,
+):
+    """
+    Fetch on‑chain details for a non‑monetary event (e.g. user_registered),
+    and save OnChainAction.
+    """
+    try:
+        details = fetch_tx_details(tx_hash)
+    except TransactionNotFound as exc:
+        raise self.retry(exc=exc)
+
+    OnChainAction.objects.create(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        status=OnChainAction.COMPLETED,
+        tx_hash=tx_hash,
+        **details,
+        event_type=event_type,
+        args=args or {},
+    )
+    
+    
+    
+    
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def register_user_on_chain(self, user_id):
     try:
@@ -377,149 +475,3 @@ def withdraw_for_user_task(self, user_id: int, credits_amount: int):
     
     
 
-@shared_task(bind=True, max_retries=5, default_retry_delay=30)
-def save_transaction_info(
-    self,
-    tx_hash: str,
-    user_id: int,
-    campaign_id: int,
-    tx_type: str,
-    tt_amount: int,
-    credits_delta: int,
-    email_verified: bool = False,
-    phone_verified: bool = False,
-):
-    """
-    Fetch on‑chain details for a user transaction and save Transaction model.
-    """
-    try:
-        # May raise TransactionNotFound if not yet mined → triggers retry
-        details = fetch_tx_details(tx_hash)
-    except TransactionNotFound as exc:
-        # Celery’s self.retry will re‑enqueue this task after default_retry_delay
-        raise self.retry(exc=exc)
-
-    # Django ORM .objects.create(): INSERT a new row with the given fields
-    Transaction.objects.create(
-        user_id=user_id,
-        campaign_id=campaign_id,
-        status=Transaction.COMPLETED,  # mark completed once details fetched
-        tx_hash=tx_hash,
-        **details,                     # unpack block_number, gas_used, etc.
-        tx_type=tx_type,
-        tt_amount=tt_amount,
-        credits_delta=credits_delta,
-        email_verified=email_verified,
-        phone_verified=phone_verified,
-    )
-
-@shared_task(bind=True, max_retries=5, default_retry_delay=30)
-def save_influencer_transaction_info(
-    self,
-    tx_hash: str,
-    user_id: int,
-    campaign_id: int,
-    influencer_id: int,
-    transaction_type: str,
-    tt_amount: int,
-    credits_delta: int,
-):
-    """
-    Fetch on‑chain details for an influencer payout/hold/refund and save InfluencerTransaction.
-    """
-    try:
-        details = fetch_tx_details(tx_hash)
-    except TransactionNotFound as exc:
-        raise self.retry(exc=exc)
-
-    InfluencerTransaction.objects.create(
-        user_id=user_id,
-        campaign_id=campaign_id,
-        status=InfluencerTransaction.COMPLETED,
-        tx_hash=tx_hash,
-        **details,
-        influencer_id=influencer_id,
-        transaction_type=transaction_type,
-        tt_amount=tt_amount,
-        credits_delta=credits_delta,
-    )
-
-@shared_task(bind=True, max_retries=5, default_retry_delay=30)
-def save_onchain_action_info(
-    self,
-    tx_hash: str,
-    user_id: int,
-    campaign_id: int,
-    event_type: str,
-    args: dict = None,
-):
-    """
-    Fetch on‑chain details for a non‑monetary event (e.g. user_registered),
-    and save OnChainAction.
-    """
-    try:
-        details = fetch_tx_details(tx_hash)
-    except TransactionNotFound as exc:
-        raise self.retry(exc=exc)
-
-    OnChainAction.objects.create(
-        user_id=user_id,
-        campaign_id=campaign_id,
-        status=OnChainAction.COMPLETED,
-        tx_hash=tx_hash,
-        **details,
-        event_type=event_type,
-        args=args or {},
-    )
-    
-    
-    
-    
-@shared_task
-def fanout_influencer_refunds(
-    tx_hashes: list,
-    user_id: int,
-    campaign_id: int,
-    influencer_id: int,
-    transaction_type: str,
-):
-    """
-    Celery will call this with tx_hashes = ['0xaaa…', '0xbbb…', ...].
-    We then enqueue one save_influencer_transaction_info per hash.
-    """
-    from .tasks import save_influencer_transaction_info
-
-    for tx in tx_hashes:
-        # `.delay(...)` kicks off each save task asynchronously
-        save_influencer_transaction_info.delay(
-            tx_hash=tx,
-            user_id=user_id,
-            campaign_id=campaign_id,
-            influencer_id=influencer_id,
-            transaction_type=transaction_type,
-            tt_amount=0,        # you can pass real totals here if you want
-            credits_delta=0,
-        )
-
-
-@shared_task
-def fanout_influencer_releases(
-    tx_hashes: list,
-    user_id: int,
-    campaign_id: int,
-    influencer_id: int,
-    transaction_type: str,
-):
-    # identical to above; you could merge into one if you prefer
-    from .tasks import save_influencer_transaction_info
-
-    for tx in tx_hashes:
-        save_influencer_transaction_info.delay(
-            tx_hash=tx,
-            user_id=user_id,
-            campaign_id=campaign_id,
-            influencer_id=influencer_id,
-            transaction_type=transaction_type,
-            tt_amount=0,
-            credits_delta=0,
-        )
