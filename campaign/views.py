@@ -471,8 +471,6 @@ class ParticipateInCampaignView(APIView):
                     tx_type="participation",        # arg #3
                     tt_amount=spent_tt_whole,       # arg #4
                     credits_delta=cost_in_credits,  # arg #5
-                    email_verified=request.user.email_verified,  # kwarg
-                    phone_verified=request.user.phone_verified,  # kwarg
                 )
 
                 # 3) Chain them:
