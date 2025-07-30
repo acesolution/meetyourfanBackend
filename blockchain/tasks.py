@@ -5,7 +5,7 @@ from django.conf import settings
 from blockchain.utils import w3, contract, fetch_tx_details
 from web3.exceptions import ContractLogicError, TimeExhausted
 from rest_framework.response import Response
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from web3 import Web3
 import logging
 from .models import Transaction, InfluencerTransaction, OnChainAction
@@ -29,6 +29,13 @@ def _build_and_send(fn, tx_params):
     raw    = w3.eth.send_raw_transaction(signed.raw_transaction)
     return raw.hex()
 
+# ── Helper to turn an integer Wei value into a float with one decimal ──
+def _wei_to_single_decimal(value_wei: int, decimals: int = 18) -> float:
+    # built-in: Decimal lets us do exact decimal arithmetic
+    quant = Decimal('0.1')  # one‐decimal precision
+    d = Decimal(value_wei) / (Decimal(10) ** decimals)
+    # ROUND_DOWN to avoid “0.1000000002” → “0.1”
+    return float(d.quantize(quant, rounding=ROUND_DOWN))
 
 @shared_task(bind=True, max_retries=5, default_retry_delay=30)
 def save_transaction_info(
@@ -183,11 +190,14 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
             
 
             for ev in events:
-                # grab the real fields
-                tt_amount = ev.args['ttAmountWei']
-                cr_amount = ev.args['creditAmountWei']
                 sellerId = ev.args['sellerId']
                 buyerId = ev.args['buyerId']
+                wei_tt    = ev.args['ttAmountWei']
+                wei_cr    = ev.args['creditAmountWei']
+
+                # ── CONVERSION ──
+                tt_amount = _wei_to_single_decimal(wei_tt)
+                cr_amount = _wei_to_single_decimal(wei_cr)
 
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
@@ -247,10 +257,13 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
             events = contract.events.HoldRefunded.process_receipt(receipt)
 
             for ev in events:
-                # grab the real fields
-                tt_amount = ev.args['ttAmountWei']
-                cr_amount = ev.args['creditAmountWei']
                 buyerId = ev.args['buyerId']
+                wei_tt    = ev.args['ttAmountWei']
+                wei_cr    = ev.args['creditAmountWei']
+
+                # ── CONVERSION ──
+                tt_amount = _wei_to_single_decimal(wei_tt)
+                cr_amount = _wei_to_single_decimal(wei_cr)
 
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
