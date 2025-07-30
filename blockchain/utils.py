@@ -4,6 +4,7 @@ import json
 from django.conf import settings
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
+from blockchain.models import ConversionRate
 
 # 1️⃣ Point at your configured provider
 w3 = Web3(Web3.HTTPProvider(settings.WEB3_PROVIDER_URL))
@@ -49,3 +50,12 @@ def fetch_tx_details(tx_hash: str) -> dict:
         "value":               txn["value"],
         "input_data":          txn["input"],
     }
+    
+    
+    
+def get_current_rate_wei() -> int:
+    """
+    Always returns the latest on-chain rate (in Wei) from the DB singleton.
+    """
+    # built-in: Query for pk=1 row
+    return ConversionRate.objects.get(pk=1).rate_wei

@@ -31,6 +31,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 import os
 import json
+from blockchain.utils import get_current_rate_wei
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ SC_ADDRESS = settings.CONTRACT_ADDRESS
 WERT_WEBHOOK_SECRET = os.getenv('WERT_WEBHOOK_SECRET')
 if not WERT_WEBHOOK_SECRET:
     raise RuntimeError("Missing WERT_WEBHOOK_SECRET in environment")
+
+
+class ConversionRateView(APIView):
+    
+    def get(self, request, *args, **kwargs):
+        """
+        GET /api/campaign/conversion-rate/
+        Returns the latest on-chain rate (in Wei).
+        """
+        conversion_rate = get_current_rate_wei()             # your DB singleton lookup
+        return Response({'conversion_rate': conversion_rate})
 
 class RegisterUserView(APIView):
     """
@@ -400,7 +412,9 @@ class ConfirmDepositView(APIView):
         # built‑in: DRF parses JSON body into request.data
         tx_hash = request.data.get('tx_hash')
         amount  = request.data.get('amount')
-
+        conversion_rate = get_current_rate_wei()
+        
+        
         # basic validation
         if not tx_hash or amount is None:
             # built‑in: return JSON error + 400 Bad Request
@@ -408,6 +422,7 @@ class ConfirmDepositView(APIView):
                 {'error': 'Both tx_hash and amount are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        credits = amount * conversion_rate 
 
         # built‑in: create() both constructs and saves the model in one call
         tx = Transaction.objects.create(
@@ -417,7 +432,7 @@ class ConfirmDepositView(APIView):
             tx_hash=tx_hash,
             tx_type=Transaction.DEPOSIT,        # your model constant
             tt_amount=Decimal(amount),          # convert to Decimal for the field
-            credits_delta=Decimal(amount),
+            credits_delta=Decimal(credits),
         )
 
         # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately
@@ -427,7 +442,7 @@ class ConfirmDepositView(APIView):
             None,                  # campaign_id
             tx.tx_type,            # 'deposit'
             int(amount),           # tt_amount
-            int(amount),           # credits_delta
+            int(credits),           # credits_delta
         )
 
         # built‑in: return JSON + 201 Created
