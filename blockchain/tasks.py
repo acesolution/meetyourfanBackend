@@ -244,7 +244,7 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
 
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             # Note: refund emits HoldRefunded events
-            events = contract.events.HoldReleased.process_receipt(receipt)
+            events = contract.events.HoldRefunded.process_receipt(receipt)
 
             for ev in events:
                 save_influencer_transaction_info.delay(
