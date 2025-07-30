@@ -182,39 +182,28 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
             events = contract.events.HoldReleased.process_receipt(receipt)
             
 
-            # **NEW LOGGING**: dump every event and its args before using them
             for ev in events:
-                # Log the raw EventData object
-                logger.info(f"[Batch {batch_index}] Raw event: {ev!r}")
-                # Log the .args AttributeDict itself
-                logger.info(f"[Batch {batch_index}] ev.args: {ev.args}")
-                # Log the available argument keys
-                logger.info(f"[Batch {batch_index}] ev.args keys: {list(ev.args.keys())}")
-                # Convert to a plain dict for clarity
-                logger.info(f"[Batch {batch_index}] ev.args as dict: {dict(ev.args)}")
-
-                # Now you can safely pull out whatever keys actually exist:
-                # e.g. tt_key = 'netTtWei' if that’s what you saw in the logs
-                tt_key = 'netTTWei' if 'netTTWei' in ev.args else 'netTtWei'
-                cr_key = 'netCrWei'
-                tt_amount = ev.args[tt_key]
-                cr_amount = ev.args[cr_key]
+                # grab the real fields
+                tt_amount = ev.args['ttAmountWei']
+                cr_amount = ev.args['creditAmountWei']
+                sellerId = ev.args['sellerId']
+                buyerId = ev.args['buyerId']
 
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
-                    user_id=User.objects.get(user_id=seller_id).id,  
+                    user_id=User.objects.get(user_id=buyerId).id,
                     campaign_id=campaign_id,
-                    influencer_id=User.objects.get(user_id=seller_id).id,
+                    influencer_id=User.objects.get(user_id=sellerId).id,
                     transaction_type=InfluencerTransaction.RELEASE,
                     tt_amount=tt_amount,
                     credits_delta=cr_amount,
                 )
 
                 recorded.append({
-                    'tx_hash':    tx_hash,
-                    'buyerId':     ev.args.get('buyerId'),
-                    'netTTWei':    tt_amount,
-                    'netCrWei':    cr_amount,
+                    'tx_hash':     tx_hash,
+                    'buyerId':     buyerId,
+                    'ttAmountWei': tt_amount,
+                    'creditAmountWei': cr_amount,
                 })
 
 
