@@ -247,21 +247,27 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
             events = contract.events.HoldRefunded.process_receipt(receipt)
 
             for ev in events:
+                # grab the real fields
+                tt_amount = ev.args['ttAmountWei']
+                cr_amount = ev.args['creditAmountWei']
+                sellerId = ev.args['sellerId']
+                buyerId = ev.args['buyerId']
+
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
-                    user_id=User.objects.get(user_id=seller_id).id,
+                    user_id=User.objects.get(user_id=buyerId).id,
                     campaign_id=campaign_id,
-                    influencer_id=User.objects.get(user_id=seller_id).id,
+                    influencer_id=User.objects.get(user_id=sellerId).id,
                     transaction_type=InfluencerTransaction.REFUND,
-                    tt_amount=ev.args.ttAmtWei,
-                    credits_delta=ev.args.crAmtWei,
+                    tt_amount=tt_amount,
+                    credits_delta=cr_amount,
                 )
 
                 recorded.append({
-                    'tx_hash':   tx_hash,
-                    'buyerId':    ev.args.buyerId,
-                    'ttAmtWei':   ev.args.ttAmtWei,
-                    'crAmtWei':   ev.args.crAmtWei,
+                    'tx_hash':     tx_hash,
+                    'buyerId':     buyerId,
+                    'ttAmountWei': tt_amount,
+                    'creditAmountWei': cr_amount,
                 })
 
         return recorded
