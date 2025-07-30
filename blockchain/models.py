@@ -87,7 +87,6 @@ class OnChainBase(models.Model):
     class Meta:
         abstract = True
 
-
 class BalanceSnapshot(models.Model):
     user           = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     tt_balance     = models.DecimalField(max_digits=30, decimal_places=0)
@@ -97,8 +96,6 @@ class BalanceSnapshot(models.Model):
     class Meta:
         ordering = ['-taken_at']
         get_latest_by = 'taken_at'
-
-
 
 class Transaction(OnChainBase):
     DEPOSIT  = 'deposit'
@@ -138,7 +135,6 @@ class Transaction(OnChainBase):
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']
 
-
 class InfluencerTransaction(OnChainBase):
     ON_HOLD = 'on_hold'
     RELEASE = 'release'
@@ -175,7 +171,6 @@ class InfluencerTransaction(OnChainBase):
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']
 
-
 class OnChainAction(OnChainBase):
     USER_REGISTERED     = 'user_registered'
     CAMPAIGN_REGISTERED = 'campaign_registered'
@@ -201,3 +196,16 @@ class OnChainAction(OnChainBase):
 
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']
+
+class ConversionRate(models.Model):
+    # We store the raw Wei integer; if you want decimals, change field type
+    rate_wei   = models.BigIntegerField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # ensure only one row
+        verbose_name = "Conversion Rate"
+        verbose_name_plural = "Conversion Rate"
+
+    def __str__(self):
+        return f"{self.rate_wei} Wei @ {self.updated_at}"
