@@ -178,7 +178,7 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
             # Wait for the tx to be mined (blocks until mined)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             # Decode all HoldReleased events from receipt.logs
-            events  = contract.events.HoldReleased().processReceipt(receipt)
+            events = contract.events.HoldReleased.process_receipt(receipt)
 
             # For each event, enqueue a save task to record InfluencerTransaction
             for ev in events:
@@ -236,7 +236,7 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
 
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             # Note: refund emits HoldRefunded events
-            events  = contract.events.HoldRefunded().processReceipt(receipt)
+            events = contract.events.HoldReleased.process_receipt(receipt)
 
             for ev in events:
                 save_influencer_transaction_info.delay(
