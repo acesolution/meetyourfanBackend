@@ -153,6 +153,7 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
     try:
         # 1) Fetch buyers on‑chain (eth_call, no gas)
         buyers = contract.functions.getCampaignBuyers(campaign_id).call({'from': OWNER})
+        original_buyers = list(buyers)
         total  = len(buyers)
         if total == 0:
             return f"No holders to release for campaign {campaign_id}"
@@ -179,26 +180,44 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             # Decode all HoldReleased events from receipt.logs
             events = contract.events.HoldReleased.process_receipt(receipt)
+            
 
-            # For each event, enqueue a save task to record InfluencerTransaction
+            # **NEW LOGGING**: dump every event and its args before using them
             for ev in events:
-                # .delay schedules the save task asynchronously
+                # Log the raw EventData object
+                logger.info(f"[Batch {batch_index}] Raw event: {ev!r}")
+                # Log the .args AttributeDict itself
+                logger.info(f"[Batch {batch_index}] ev.args: {ev.args}")
+                # Log the available argument keys
+                logger.info(f"[Batch {batch_index}] ev.args keys: {list(ev.args.keys())}")
+                # Convert to a plain dict for clarity
+                logger.info(f"[Batch {batch_index}] ev.args as dict: {dict(ev.args)}")
+
+                # Now you can safely pull out whatever keys actually exist:
+                # e.g. tt_key = 'netTtWei' if that’s what you saw in the logs
+                tt_key = 'netTTWei' if 'netTTWei' in ev.args else 'netTtWei'
+                cr_key = 'netCrWei'
+                tt_amount = ev.args[tt_key]
+                cr_amount = ev.args[cr_key]
+
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
-                    user_id=User.objects.get(user_id=seller_id).id,  # local FK
+                    user_id=User.objects.get(user_id=seller_id).id,  
                     campaign_id=campaign_id,
                     influencer_id=User.objects.get(user_id=seller_id).id,
                     transaction_type=InfluencerTransaction.RELEASE,
-                    tt_amount=ev.args.netTTWei,
-                    credits_delta=ev.args.netCrWei,
+                    tt_amount=tt_amount,
+                    credits_delta=cr_amount,
                 )
 
                 recorded.append({
                     'tx_hash':    tx_hash,
-                    'buyerId':     ev.args.buyerId,
-                    'netTTWei':    ev.args.netTTWei,
-                    'netCrWei':    ev.args.netCrWei,
+                    'buyerId':     ev.args.get('buyerId'),
+                    'netTTWei':    tt_amount,
+                    'netCrWei':    cr_amount,
                 })
+
+
 
         return recorded
 
