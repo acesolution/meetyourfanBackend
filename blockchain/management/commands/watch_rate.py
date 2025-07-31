@@ -53,8 +53,8 @@ class Command(BaseCommand):
             try:
                 entries = event_filter.get_new_entries()
                 for ev in entries:
-                    # adjust arg names if contract uses different ones
-                    old_rate = getattr(ev.args, "conversionRate", None)
+                    self.stdout.write(f"Raw event args: {ev.args}")
+                    old_rate = getattr(ev.args, "oldRate", None)
                     new_rate = getattr(ev.args, "newRate", None)
                     if new_rate is None:
                         self.stderr.write(f"Event missing expected newRate arg: {ev}")
