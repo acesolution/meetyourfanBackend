@@ -1,30 +1,79 @@
 # blockchain/management/commands/watch_rate.py
 import time
+import json
 from django.core.management.base import BaseCommand
+from django.conf import settings
 from web3 import Web3
-from meetyourfanBackend.settings import WEB3_PROVIDER_URL, CONTRACT_ADDRESS, CONTRACT_ABI
+from web3.middleware import geth_poa_middleware  # use if chain is PoA (BSC/etc)
 from blockchain.models import ConversionRate
 
 class Command(BaseCommand):
-    help = "Watch for ConversionRateChanged events and update the database."
+    help = "Watch for conversion rate change events and keep DB in sync."
 
     def handle(self, *args, **opts):
-        w3 = Web3(Web3.WebsocketProvider(WEB3_PROVIDER_URL))
-        contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
+        # ── Wire up WebSocket + middleware ───────────────────────────────
+        w3 = Web3(Web3.WebsocketProvider(settings.WEB3_PROVIDER_URL))
+        # If your chain is PoA-like (e.g., BSC, some private chains), inject middleware:
+        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
-        # built‑in: createFilter(fromBlock="latest") watches only new logs
-        event_filter = contract.events.ConversionRateUpdated.createFilter(fromBlock="latest")
+        # ── Load ABI & contract ────────────────────────────────────────
+        with open(settings.CONTRACT_ABI_PATH) as f:
+            abi = json.load(f)
+        contract = w3.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
 
-        self.stdout.write("Listening for ConversionRateChanged…")
+        # ── Initial seed: fetch current rate on-chain so DB is never empty ──
+        try:
+            # Replace `conversionRate` with the actual getter name if different
+            onchain_rate = contract.functions.conversionRate().call()
+            obj, created = ConversionRate.objects.get_or_create(
+                pk=1, defaults={"rate_wei": onchain_rate}
+            )
+            if obj.rate_wei != onchain_rate:
+                obj.rate_wei = onchain_rate
+                obj.save(update_fields=["rate_wei"])
+                self.stdout.write(f"Initial sync: rate updated to {onchain_rate}")
+            else:
+                self.stdout.write(f"Initial sync: rate already {obj.rate_wei}")
+        except Exception as e:
+            self.stderr.write(f"[startup] failed to fetch initial rate: {e}")
+
+        # ── Set up event filter ───────────────────────────────────────
+        # Ensure this name matches the actual Solidity event
+        EVENT_NAME = "ConversionRateUpdated"  # or "ConversionRateUpdated" as per your contract
+        try:
+            event_cls = getattr(contract.events, EVENT_NAME)
+        except AttributeError:
+            self.stderr.write(f"Event {EVENT_NAME} not found in ABI.")
+            return
+
+        event_filter = event_cls.createFilter(fromBlock="latest")
+
+        self.stdout.write(f"Listening for {EVENT_NAME} events…")
         while True:
-            for ev in event_filter.get_new_entries():
-                old = ev.args.oldRate
-                new = ev.args.newRate
+            try:
+                entries = event_filter.get_new_entries()
+                for ev in entries:
+                    # adjust arg names if contract uses different ones
+                    old_rate = getattr(ev.args, "conversionRate", None)
+                    new_rate = getattr(ev.args, "newRate", None)
+                    if new_rate is None:
+                        self.stderr.write(f"Event missing expected newRate arg: {ev}")
+                        continue
 
-                # built‑in: get_or_create ensures we always have one row
-                obj, _ = ConversionRate.objects.get_or_create(pk=1, defaults={"rate_wei": new})
-                if obj.rate_wei != new:
-                    obj.rate_wei = new
-                    obj.save(update_fields=["rate_wei"])
-                    self.stdout.write(f"Updated rate: {old} → {new}")
+                    obj, _ = ConversionRate.objects.get_or_create(
+                        pk=1, defaults={"rate_wei": new_rate}
+                    )
+                    if obj.rate_wei != new_rate:
+                        obj.rate_wei = new_rate
+                        obj.save(update_fields=["rate_wei"])
+                        self.stdout.write(f"Updated rate: {old_rate} → {new_rate}")
+            except Exception as e:
+                self.stderr.write(f"[watch loop] error: {e}")
+                # attempt to recreate filter from current block so we don't miss new ones
+                try:
+                    current_block = w3.eth.block_number
+                    event_filter = event_cls.createFilter(fromBlock=current_block)
+                    self.stderr.write("[watch loop] recreated filter")
+                except Exception as inner:
+                    self.stderr.write(f"[watch loop] failed to recreate filter: {inner}")
             time.sleep(2)

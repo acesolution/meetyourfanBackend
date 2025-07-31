@@ -6,6 +6,7 @@ from .models import (
     BalanceSnapshot,
     InfluencerTransaction,
     OnChainAction,
+    ConversionRate
 )
 
 # ── Transaction ──────────────────────────────────────────────────────────────
@@ -162,3 +163,20 @@ class OnChainActionAdmin(admin.ModelAdmin):
         'campaign',
     )
     ordering = ('-timestamp',)
+
+
+
+# ── ConversionRate (singleton) ───────────────────────────────────────────────
+@admin.register(ConversionRate)
+class ConversionRateAdmin(admin.ModelAdmin):
+    list_display = ('id', 'rate_wei', 'updated_at')
+    readonly_fields = ('updated_at',)  # updated_at is maintained automatically
+    # built-in: prevent creating more than one row (singleton pattern)
+    def has_add_permission(self, request):
+        if ConversionRate.objects.exists():
+            return False
+        return super().has_add_permission(request)
+
+    # built-in: disable deletion so the singleton stays present
+    def has_delete_permission(self, request, obj=None):
+        return False
