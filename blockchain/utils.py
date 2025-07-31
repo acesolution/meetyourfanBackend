@@ -26,18 +26,31 @@ if not w3.is_connected():
     raise RuntimeError("Cannot connect to WEB3_PROVIDER_URL")
 
 
-# ── Helper to get a WebSocket-backed contract (for event listening) ───
 def get_ws_contract():
     """
-    Returns (w3_ws, contract_ws) using WebSocketProvider so watchers can listen to events.
-    Assumes you have a WS-capable endpoint; if your WEB3_PROVIDER_URL is ws:// or wss://
-    you can reuse it, otherwise add a separate WS URL in settings.
+    Returns (w3_ws, contract_ws) using a WebSocket-backed connection so watchers can listen
+    to events. Falls back to LegacyWebSocketProvider if WebsocketProvider isn't present.
+    Assumes settings.WEB3_PROVIDER_URL is ws:// or wss://; if it's HTTP you need a separate WS URL.
     """
-    # Use the same middleware that works for your chain
-    w3_ws = Web3(Web3.WebsocketProvider(settings.WEB3_PROVIDER_URL))
+    ws_url = settings.WEB3_PROVIDER_URL
+    if not ws_url.startswith(("ws://", "wss://")):
+        raise RuntimeError(f"WEB3_PROVIDER_URL for websocket must be ws:// or wss://, got {ws_url!r}")
+
+    # Try the newer provider if present, else fallback to legacy
+    provider_cls = getattr(Web3, "WebsocketProvider", None) or getattr(Web3, "LegacyWebSocketProvider", None)
+    if provider_cls is None:
+        raise RuntimeError("No WebSocket provider class available on Web3 (neither WebsocketProvider nor LegacyWebSocketProvider)")
+
+    # Instantiate websocket-backed Web3 and inject same middleware
+    w3_ws = Web3(provider_cls(ws_url))
     w3_ws.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
+
+    if not w3_ws.is_connected():
+        raise RuntimeError(f"Failed to connect over websocket to {ws_url}")
+
     contract_ws = w3_ws.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
     return w3_ws, contract_ws
+
 
 def fetch_tx_details(tx_hash: str) -> dict:
     """
