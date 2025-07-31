@@ -23,6 +23,19 @@ if not w3.is_connected():
     raise RuntimeError("Cannot connect to WEB3_PROVIDER_URL")
 
 
+# ── Helper to get a WebSocket-backed contract (for event listening) ───
+def get_ws_contract():
+    """
+    Returns (w3_ws, contract_ws) using WebSocketProvider so watchers can listen to events.
+    Assumes you have a WS-capable endpoint; if your WEB3_PROVIDER_URL is ws:// or wss://
+    you can reuse it, otherwise add a separate WS URL in settings.
+    """
+    # Use the same middleware that works for your chain
+    w3_ws = Web3(Web3.WebsocketProvider(settings.WEB3_PROVIDER_URL))
+    w3_ws.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
+    contract_ws = w3_ws.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
+    return w3_ws, contract_ws
+
 def fetch_tx_details(tx_hash: str) -> dict:
     """
     Fetch on-chain receipt + original tx fields for the given hash.
