@@ -3,13 +3,13 @@
 import time
 from django.core.management.base import BaseCommand
 from blockchain.models import ConversionRate
-from blockchain.utils import contract_http, get_ws_contract  # reuse shared pieces
+from blockchain.utils import contract_http, get_ws_contract  # reuse centralized setup
 
 class Command(BaseCommand):
-    help = "Watch for conversion rate change events and keep DB in sync."
+    help = "Watch for ConversionRateUpdated events and keep DB in sync."
 
     def handle(self, *args, **opts):
-        # ── Bootstrap from on-chain via HTTP contract (shared) ──────────────
+        # ── Initial seed from on-chain via shared HTTP contract ─────────
         try:
             onchain_rate = contract_http.functions.conversionRate().call()
             obj, _ = ConversionRate.objects.get_or_create(
@@ -24,8 +24,9 @@ class Command(BaseCommand):
         except Exception as e:
             self.stderr.write(f"[startup] failed to fetch initial rate: {e}")
 
-        # ── Event watching using WebSocket-backed contract ────────────────
+        # ── Event watching via WebSocket-backed contract ───────────────
         w3_ws, contract_ws = get_ws_contract()
+
         try:
             event_cls = contract_ws.events.ConversionRateUpdated
         except AttributeError:
@@ -55,6 +56,7 @@ class Command(BaseCommand):
                         self.stdout.write(f"Updated rate: {old_rate} → {new_rate}")
             except Exception as e:
                 self.stderr.write(f"[watch loop] error: {e}")
+                # try to recover the filter so we don't permanently miss events
                 try:
                     current_block = w3_ws.eth.block_number
                     event_filter = event_cls.createFilter(fromBlock=max(0, current_block - 5))
