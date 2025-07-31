@@ -4,7 +4,7 @@ import json
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from web3 import Web3
-from web3.middleware import geth_poa_middleware  # use if chain is PoA (BSC/etc)
+from web3.middleware import ExtraDataToPOAMiddleware  # reuse the working one
 from blockchain.models import ConversionRate
 
 class Command(BaseCommand):
@@ -14,7 +14,7 @@ class Command(BaseCommand):
         # ── Wire up WebSocket + middleware ───────────────────────────────
         w3 = Web3(Web3.WebsocketProvider(settings.WEB3_PROVIDER_URL))
         # If your chain is PoA-like (e.g., BSC, some private chains), inject middleware:
-        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
 
         # ── Load ABI & contract ────────────────────────────────────────
         with open(settings.CONTRACT_ABI_PATH) as f:
