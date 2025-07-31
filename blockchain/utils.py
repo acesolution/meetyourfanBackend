@@ -6,35 +6,56 @@ from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from blockchain.models import ConversionRate
 
-# ── Shared HTTP client & contract for reads / bootstrap ───────────
-w3_http = Web3(Web3.HTTPProvider(settings.WEB3_PROVIDER_URL))
-# built-in: some chains (Clique/PoA) need this so logs / extraData work
-w3_http.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
+# 1️⃣ Point at your configured provider
+w3 = Web3(Web3.HTTPProvider(settings.WEB3_PROVIDER_URL))
 
+# 2️⃣ Inject the PoA middleware so extraData > 32 bytes is OK
+w3.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
+
+# 3️⃣ Load your ABI & instantiate the contract once
 with open(settings.CONTRACT_ABI_PATH) as f:
     abi = json.load(f)
 
-contract_http = w3_http.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
+contract = w3.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
 
-if not w3_http.is_connected():
+contract_http = contract  # alias; modules importing contract_http expect this to exist
+
+
+# 4️⃣ Sanity check at import time
+if not w3.is_connected():
     raise RuntimeError("Cannot connect to WEB3_PROVIDER_URL")
 
-# ── Factory for WebSocket-backed contract (for event listening) ───
+
+# ── Helper to get a WebSocket-backed contract (for event listening) ───
 def get_ws_contract():
     """
     Returns (w3_ws, contract_ws) using WebSocketProvider so watchers can listen to events.
+    Assumes you have a WS-capable endpoint; if your WEB3_PROVIDER_URL is ws:// or wss://
+    you can reuse it, otherwise add a separate WS URL in settings.
     """
+    # Use the same middleware that works for your chain
     w3_ws = Web3(Web3.WebsocketProvider(settings.WEB3_PROVIDER_URL))
-    # same middleware as HTTP version; adjust if your chain requires something else
     w3_ws.middleware_onion.inject(ExtraDataToPOAMiddleware(), layer=0)
     contract_ws = w3_ws.eth.contract(address=settings.CONTRACT_ADDRESS, abi=abi)
     return w3_ws, contract_ws
 
-
-# ── Helpers ───────────────────────────────────────────────────────
 def fetch_tx_details(tx_hash: str) -> dict:
-    receipt = w3_http.eth.get_transaction_receipt(tx_hash)
-    txn = w3_http.eth.get_transaction(tx_hash)
+    """
+    Fetch on-chain receipt + original tx fields for the given hash.
+    Raises:
+      - TransactionNotFound: if the tx isn't yet mined.
+    Returns a dict of the metadata we care about.
+    """
+    # ─── Receipt ────────────────────────────────────────────────────────────────
+    # w3.eth.get_transaction_receipt blocks until the tx is mined,
+    # then returns a receipt object with gasUsed, blockNumber, etc.
+    receipt = w3.eth.get_transaction_receipt(tx_hash)
+
+    # ─── Original TX ────────────────────────────────────────────────────────────
+    # w3.eth.get_transaction returns the original tx dict:
+    #   'from', 'to', 'value', 'input', etc.
+    txn = w3.eth.get_transaction(tx_hash)
+
     return {
         "block_number":        receipt.blockNumber,
         "transaction_index":   receipt.transactionIndex,
@@ -45,9 +66,12 @@ def fetch_tx_details(tx_hash: str) -> dict:
         "value":               txn["value"],
         "input_data":          txn["input"],
     }
-
-
+    
+    
+    
 def get_current_rate_wei() -> int:
-    # built-in: resilient get_or_create so missing singleton doesn't blow up
-    obj, _ = ConversionRate.objects.get_or_create(pk=1, defaults={"rate_wei": 10})
-    return obj.rate_wei
+    """
+    Always returns the latest on-chain rate (in Wei) from the DB singleton.
+    """
+    # built-in: Query for pk=1 row
+    return ConversionRate.objects.get(pk=1).rate_wei
