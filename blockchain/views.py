@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, permission_classes
 from blockchain.utils import w3, contract
 from rest_framework.permissions import IsAuthenticated
 from uuid import uuid4
-from blockchain.models import Transaction, BalanceSnapshot
+from blockchain.models import Transaction, BalanceSnapshot, InfluencerTransaction
 from blockchain.tasks import _build_and_send, withdraw_for_user_task, save_transaction_info
 from decimal import Decimal
 import logging
@@ -32,6 +32,9 @@ from django.views.decorators.csrf import csrf_exempt
 import os
 import json
 from blockchain.utils import get_current_rate_wei
+from .serializers import TransactionSerializer, InfluencerTransactionSerializer
+from rest_framework.pagination import PageNumberPagination
+
 
 logger = logging.getLogger(__name__)
 
@@ -515,6 +518,88 @@ class WertWebhookView(View):
         # Built‑in: if someone tries GET, we reject
         return HttpResponseBadRequest("Only POST allowed")
 
+
+# Custom small wrapper to reuse DRF's page logic but expose metadata manually.
+class StandardPagination(PageNumberPagination):
+    page_size = 20  # default
+    page_size_query_param = "page_size"  # allow override via ?page_size=
+    max_page_size = 100
+
+def _paginate_queryset(qs, request, paginator: StandardPagination):
+    """
+    Paginate the queryset and return (page_queryset, meta_dict)
+    """
+    page_qs = paginator.paginate_queryset(qs, request)
+    # build metadata explicitly (so we can do two different paginations independently)
+    page = getattr(paginator, "page", None)
+    meta = {
+        "page": paginator.page.number if page is not None else 1,
+        "page_size": paginator.get_page_size(request),
+        "total": qs.count(),
+        "has_next": page.has_next() if page is not None else False,
+        "has_previous": page.has_previous() if page is not None else False,
+    }
+    return page_qs or [], meta  # ensure list even if empty
+
+
+class UserTransactionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, format=None):
+        """
+        GET /api/user-transactions/?status=Completed|Pending|Failed|all&page=1&page_size=20
+
+        Fans: only their Transaction records.
+        Influencers: both Transaction and InfluencerTransaction records.
+        """
+        user = request.user
+
+        # Normalize status filter (frontend sends e.g. "Completed" or "all")
+        raw_status = request.query_params.get("status", "all").lower()
+        allowed = {"pending", "completed", "failed", "all"}
+        if raw_status not in allowed:
+            return Response(
+                {"detail": "Invalid status filter."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        status_filter = None if raw_status == "all" else raw_status  # None means no filtering
+
+        # Transactions (always owned by user)
+        tx_qs = Transaction.objects.filter(user=user)
+        if status_filter:
+            tx_qs = tx_qs.filter(status=status_filter)
+
+        paginator_tx = StandardPagination()
+        tx_page, tx_meta = _paginate_queryset(tx_qs.order_by("-timestamp"), request, paginator_tx)
+        tx_serialized = TransactionSerializer(tx_page, many=True).data
+
+        response_payload = {
+            "transactions": tx_serialized,
+            "transactions_pagination": tx_meta,
+        }
+
+        if getattr(user, "user_type", None) == "influencer":
+            # InfluencerTransactions are scoped by influencer field
+            inf_qs = InfluencerTransaction.objects.filter(influencer=user)
+            if status_filter:
+                inf_qs = inf_qs.filter(status=status_filter)
+
+            paginator_inf = StandardPagination()
+            inf_page, inf_meta = _paginate_queryset(inf_qs.order_by("-timestamp"), request, paginator_inf)
+            inf_serialized = InfluencerTransactionSerializer(inf_page, many=True).data
+
+            response_payload["influencer_transactions"] = inf_serialized
+            response_payload["influencer_transactions_pagination"] = inf_meta
+
+        elif getattr(user, "user_type", None) == "fan":
+            # nothing extra
+            pass
+        else:
+            return Response(
+                {"detail": "Unknown user type."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(response_payload, status=status.HTTP_200_OK)
 
 # ──────────────────────────────────────────────────────────────
 # These are your ORM hooks – replace with real implementations
