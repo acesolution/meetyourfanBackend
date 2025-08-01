@@ -86,7 +86,7 @@ class InfluencerTransactionAdmin(admin.ModelAdmin):
         'user',
         'influencer',
         'campaign',
-        'transaction_type',
+        'tx_type',
         'tt_amount',
         'credits_delta',
         'status',
@@ -96,7 +96,7 @@ class InfluencerTransactionAdmin(admin.ModelAdmin):
         'timestamp',
     )
     list_filter = (
-        'transaction_type',
+        'tx_type',
         'status',
         'campaign',
     )
@@ -129,7 +129,7 @@ class InfluencerTransactionAdmin(admin.ModelAdmin):
 class OnChainActionAdmin(admin.ModelAdmin):
     list_display = (
         'id',
-        'event_type',
+        'tx_type',
         'user',
         'campaign',
         'status',
@@ -138,7 +138,7 @@ class OnChainActionAdmin(admin.ModelAdmin):
         'timestamp',
     )
     list_filter = (
-        'event_type',
+        'tx_type',
         'status',
         'campaign',
     )
