@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from uuid import uuid4
 from blockchain.models import Transaction, BalanceSnapshot, InfluencerTransaction
 from blockchain.tasks import _build_and_send, withdraw_for_user_task, save_transaction_info
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import logging
 from web3.exceptions import ContractCustomError
 from django.utils import timezone
@@ -19,11 +19,7 @@ from django.core.mail import send_mail
 from api.models import VerificationCode
 from django.template.loader import render_to_string
 from web3 import Web3
-from django.http import (
-    JsonResponse,
-    HttpResponseBadRequest,
-    HttpResponseForbidden,
-)
+from django.http import ( JsonResponse, HttpResponseBadRequest, HttpResponseForbidden)
 import hmac
 import hashlib
 from django.views import View
@@ -34,6 +30,9 @@ import json
 from blockchain.utils import get_current_rate_wei
 from .serializers import TransactionSerializer, InfluencerTransactionSerializer
 from rest_framework.pagination import PageNumberPagination
+from rest_framework import status as drf_status
+from django.utils.dateparse import parse_date
+from django.db.models import Q
 
 
 logger = logging.getLogger(__name__)
@@ -531,12 +530,74 @@ def _paginate_queryset(qs, request, paginator: StandardPagination):
     return page_qs or [], meta  # ensure list even if empty
 
 
+def _safe_parse_decimal(val):
+    try:
+        return Decimal(val)
+    except (TypeError, InvalidOperation):
+        return None
+
+def _apply_filters_to_qs(qs, params):
+    """
+    Apply the optional filters coming from query params to any on-chain queryset
+    that has: timestamp, credits_delta, campaign (with title/slug), tx_type, status.
+    """
+    # date window (inclusive)
+    start_date = params.get("start_date")
+    if start_date:
+        dt = parse_date(start_date)  # safe ISO date parsing (expects YYYY-MM-DD)
+        if dt:
+            # filter by date portion of timestamp
+            qs = qs.filter(timestamp__date__gte=dt)
+
+    end_date = params.get("end_date")
+    if end_date:
+        dt = parse_date(end_date)
+        if dt:
+            qs = qs.filter(timestamp__date__lte=dt)
+
+    # campaign title/slug partial match
+    campaign_title = params.get("campaign_title")
+    if campaign_title:
+        qs = qs.filter(
+            Q(campaign__title__icontains=campaign_title)
+            | Q(campaign__slug__icontains=campaign_title)
+        )
+
+    # tx_type filter (case insensitive)
+    tx_type = params.get("tx_type")
+    if tx_type:
+        qs = qs.filter(tx_type__iexact=tx_type)
+
+    # credits_delta range
+    min_credit = params.get("min_credit")
+    if min_credit is not None:
+        parsed = _safe_parse_decimal(min_credit)
+        if parsed is not None:
+            qs = qs.filter(credits_delta__gte=parsed)
+
+    max_credit = params.get("max_credit")
+    if max_credit is not None:
+        parsed = _safe_parse_decimal(max_credit)
+        if parsed is not None:
+            qs = qs.filter(credits_delta__lte=parsed)
+
+    return qs
+
+
 class UserTransactionsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, format=None):
         """
-        GET /api/user-transactions/?status=Completed|Pending|Failed|all&page=1&page_size=20
+        GET /api/user-transactions/?status=Completed|Pending|Failed|all
+        & start_date=YYYY-MM-DD
+        & end_date=YYYY-MM-DD
+        & min_credit=...
+        & max_credit=...
+        & campaign_title=...
+        & tx_type=...
+        & page=...
+        & page_size=...
 
         Fans: only their Transaction records.
         Influencers: both Transaction and InfluencerTransaction records.
@@ -548,18 +609,23 @@ class UserTransactionsView(APIView):
         allowed = {"pending", "completed", "failed", "all"}
         if raw_status not in allowed:
             return Response(
-                {"detail": "Invalid status filter."}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "Invalid status filter."}, status=drf_status.HTTP_400_BAD_REQUEST
             )
 
         status_filter = None if raw_status == "all" else raw_status  # None means no filtering
 
-        # Transactions (always owned by user)
+        # Base Transaction queryset (always owned by user) with its filters
         tx_qs = Transaction.objects.filter(user=user).select_related("campaign")
         if status_filter:
             tx_qs = tx_qs.filter(status=status_filter)
+        tx_qs = _apply_filters_to_qs(tx_qs, request.query_params)
 
+        # Order before pagination (your existing ordering is also on model Meta, but explicit is safer here)
+        tx_qs = tx_qs.order_by("-timestamp")
+
+        # Paginate transactions
         paginator_tx = StandardPagination()
-        tx_page, tx_meta = _paginate_queryset(tx_qs.order_by("-timestamp"), request, paginator_tx)
+        tx_page, tx_meta = _paginate_queryset(tx_qs, request, paginator_tx)
         tx_serialized = TransactionSerializer(tx_page, many=True).data
 
         response_payload = {
@@ -572,9 +638,11 @@ class UserTransactionsView(APIView):
             inf_qs = InfluencerTransaction.objects.filter(influencer=user).select_related("campaign")
             if status_filter:
                 inf_qs = inf_qs.filter(status=status_filter)
+            inf_qs = _apply_filters_to_qs(inf_qs, request.query_params)
+            inf_qs = inf_qs.order_by("-timestamp")
 
             paginator_inf = StandardPagination()
-            inf_page, inf_meta = _paginate_queryset(inf_qs.order_by("-timestamp"), request, paginator_inf)
+            inf_page, inf_meta = _paginate_queryset(inf_qs, request, paginator_inf)
             inf_serialized = InfluencerTransactionSerializer(inf_page, many=True).data
 
             response_payload["influencer_transactions"] = inf_serialized
@@ -585,11 +653,10 @@ class UserTransactionsView(APIView):
             pass
         else:
             return Response(
-                {"detail": "Unknown user type."}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "Unknown user type."}, status=drf_status.HTTP_400_BAD_REQUEST
             )
 
-        return Response(response_payload, status=status.HTTP_200_OK)
-
+        return Response(response_payload, status=drf_status.HTTP_200_OK)
 # ──────────────────────────────────────────────────────────────
 # These are your ORM hooks – replace with real implementations
 # ──────────────────────────────────────────────────────────────
