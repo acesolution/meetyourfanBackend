@@ -565,7 +565,7 @@ class UserTransactionsView(APIView):
         status_filter = None if raw_status == "all" else raw_status  # None means no filtering
 
         # Transactions (always owned by user)
-        tx_qs = Transaction.objects.filter(user=user)
+        tx_qs = Transaction.objects.filter(user=user).select_related("campaign")
         if status_filter:
             tx_qs = tx_qs.filter(status=status_filter)
 
@@ -580,7 +580,7 @@ class UserTransactionsView(APIView):
 
         if getattr(user, "user_type", None) == "influencer":
             # InfluencerTransactions are scoped by influencer field
-            inf_qs = InfluencerTransaction.objects.filter(influencer=user)
+            inf_qs = InfluencerTransaction.objects.filter(influencer=user).select_related("campaign")
             if status_filter:
                 inf_qs = inf_qs.filter(status=status_filter)
 
