@@ -37,6 +37,20 @@ def _wei_to_single_decimal(value_wei: int, decimals: int = 18) -> float:
     # ROUND_DOWN to avoid “0.1000000002” → “0.1”
     return float(d.quantize(quant, rounding=ROUND_DOWN))
 
+def _ensure_prefixed(tx_hash: str) -> str:
+    """
+    Guarantee the hash has 0x prefix. If missing, prepend it.
+    Empty / falsy returns empty string.
+    """
+    if not tx_hash:
+        return ""
+    if not tx_hash.startswith("0x"):
+        normalized = f"0x{tx_hash}"
+        logger.debug("Normalized tx_hash from %s to %s", tx_hash, normalized)
+        return normalized
+    return tx_hash
+
+
 @shared_task(bind=True, max_retries=5, default_retry_delay=30)
 def save_transaction_info(
     self,
@@ -58,6 +72,9 @@ def save_transaction_info(
     except TransactionNotFound as exc:
         # Celery’s self.retry will re‑enqueue this task after default_retry_delay
         raise self.retry(exc=exc)
+    
+    # normalize incoming hash so downstream logic always gets 0x-prefixed
+    tx_hash = _ensure_prefixed(tx_hash)
 
     # Django ORM .objects.create(): INSERT a new row with the given fields
     Transaction.objects.create(
@@ -91,6 +108,9 @@ def save_influencer_transaction_info(
         details = fetch_tx_details(tx_hash)
     except TransactionNotFound as exc:
         raise self.retry(exc=exc)
+    
+    # normalize incoming hash so downstream logic always gets 0x-prefixed
+    tx_hash = _ensure_prefixed(tx_hash)
 
     InfluencerTransaction.objects.create(
         user_id=user_id,
@@ -121,6 +141,9 @@ def save_onchain_action_info(
         details = fetch_tx_details(tx_hash)
     except TransactionNotFound as exc:
         raise self.retry(exc=exc)
+    
+    # normalize incoming hash so downstream logic always gets 0x-prefixed
+    tx_hash = _ensure_prefixed(tx_hash)
 
     OnChainAction.objects.create(
         user_id=user_id,
