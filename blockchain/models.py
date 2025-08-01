@@ -152,7 +152,7 @@ class InfluencerTransaction(OnChainBase):
         help_text="Campaign owner receiving or tied to these funds"
     )
     
-    transaction_type = models.CharField(
+    tx_type = models.CharField(
         max_length=10,
         choices=TYPE_CHOICES,
         help_text="on_hold / release / refund"
@@ -181,7 +181,7 @@ class OnChainAction(OnChainBase):
         (OTHER_OPERATION,     'Other Operation'),
     ]
 
-    event_type   = models.CharField(
+    tx_type   = models.CharField(
         max_length=32,
         choices=EVENT_CHOICES,
         help_text="Which non‑monetary event occurred"

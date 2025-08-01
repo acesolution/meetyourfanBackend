@@ -128,7 +128,7 @@ def save_onchain_action_info(
         status=OnChainAction.COMPLETED,
         tx_hash=tx_hash,
         **details,
-        event_type=event_type,
+        tx_type=event_type,
         args=args or {},
     )
     
@@ -204,7 +204,7 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     user_id=User.objects.get(user_id=buyerId).id,
                     campaign_id=campaign_id,
                     influencer_id=User.objects.get(user_id=sellerId).id,
-                    transaction_type=InfluencerTransaction.RELEASE,
+                    tx_type=InfluencerTransaction.RELEASE,
                     tt_amount=tt_amount,
                     credits_delta=cr_amount,
                 )
@@ -270,7 +270,7 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     user_id=User.objects.get(user_id=buyerId).id,
                     campaign_id=campaign_id,
                     influencer_id=User.objects.get(user_id=seller_id).id,
-                    transaction_type=InfluencerTransaction.REFUND,
+                    tx_type=InfluencerTransaction.REFUND,
                     tt_amount=tt_amount,
                     credits_delta=cr_amount,
                 )
