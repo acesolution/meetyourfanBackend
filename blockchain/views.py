@@ -427,23 +427,12 @@ class ConfirmDepositView(APIView):
             )
         credits = amount * conversion_rate 
 
-        # built‑in: create() both constructs and saves the model in one call
-        tx = Transaction.objects.create(
-            user=request.user,                  # FK to User
-            campaign=None,                      # no campaign for pure deposits
-            status=Transaction.PENDING,         # initial state
-            tx_hash=tx_hash,
-            tx_type=Transaction.DEPOSIT,        # your model constant
-            tt_amount=Decimal(amount),          # convert to Decimal for the field
-            credits_delta=Decimal(credits),
-        )
-
         # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately
         save_transaction_info.delay(
             tx_hash,
             request.user.id,       # user_id FK
             None,                  # campaign_id
-            tx.tx_type,            # 'deposit'
+            Transaction.DEPOSIT,   # 'deposit'
             int(amount),           # tt_amount
             int(credits),           # credits_delta
         )

@@ -399,12 +399,6 @@ def hold_for_campaign_on_chain(
     # Derive the exact TT‐Wei (including fractions!) by dividing credits‐Wei by conversionRate
     spent_tt_wei       = spent_credit_wei // conv_rate            # e.g. 66e18//10 = 6.6e18
 
-    # log everything
-    logger.error(f"[hold_for_campaign] escrow_id={escrow_record_id} campaign={campaign_id} buyer={buyer_id}")
-    logger.error(f"  spent_tt_whole={spent_tt_whole}, cost_in_credits={cost_in_credits}")
-    logger.error(f"  spent_tt_wei={spent_tt_wei}, spent_credit_wei={spent_credit_wei}")
-    logger.error(f"  on-chain conversionRate={contract.functions.conversionRate().call()}")
-    
     try:
         # 6) On‐chain balance check
         try:
