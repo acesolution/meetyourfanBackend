@@ -2,6 +2,8 @@
 
 from django.db import models
 from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
 
 class OnChainBase(models.Model):
     """
@@ -209,3 +211,23 @@ class ConversionRate(models.Model):
 
     def __str__(self):
         return f"{self.rate_wei} Wei @ {self.updated_at}"
+    
+    
+class TransactionIssueReport(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    transaction_hash = models.CharField(max_length=100, blank=True)  # keep for convenience / indexing
+
+    # generic link to either Transaction or InfluencerTransaction
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
+    object_id = models.CharField(max_length=255, null=True, blank=True)
+    transaction = GenericForeignKey("content_type", "object_id")
+
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"IssueReport for {self.transaction_hash} by {self.user}"
+
+class IssueAttachment(models.Model):
+    report = models.ForeignKey(TransactionIssueReport, related_name="attachments", on_delete=models.CASCADE)
+    file = models.FileField(upload_to="issue_reports/%Y/%m/")

@@ -1,7 +1,7 @@
 # blockchain/serializers.py
 
 from rest_framework import serializers
-from .models import Transaction, InfluencerTransaction
+from .models import Transaction, InfluencerTransaction, TransactionIssueReport, IssueAttachment
 
 class BaseOnChainSerializer(serializers.ModelSerializer):
     campaign = serializers.SerializerMethodField()
@@ -40,3 +40,52 @@ class InfluencerTransactionSerializer(BaseOnChainSerializer):
             "from_address", "to_address", "value", "input_data",
             "timestamp", "campaign",
         ]
+
+
+
+class IssueAttachmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IssueAttachment
+        fields = ["id", "file"]
+
+class TransactionInlineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transaction
+        fields = ["id", "tx_hash", "credits_delta", "tt_amount", "status", "timestamp", "campaign"]
+
+class InfluencerTransactionInlineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InfluencerTransaction
+        fields = ["id", "tx_hash", "credits_delta", "tt_amount", "status", "timestamp", "campaign"]
+
+class TransactionIssueReportSerializer(serializers.ModelSerializer):
+    attachments = IssueAttachmentSerializer(many=True, read_only=True)
+    transaction = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TransactionIssueReport
+        fields = [
+            "id",
+            "user",
+            "transaction_hash",
+            "transaction",
+            "description",
+            "attachments",
+            "created_at",
+        ]
+        read_only_fields = ["user", "created_at"]
+
+    def get_transaction(self, obj):
+        if not obj.content_type or not obj.object_id:
+            return None
+        model_cls = obj.content_type.model_class()
+        try:
+            instance = model_cls.objects.get(pk=obj.object_id)
+        except Exception:
+            return None
+
+        if isinstance(instance, Transaction):
+            return TransactionInlineSerializer(instance).data
+        if isinstance(instance, InfluencerTransaction):
+            return InfluencerTransactionInlineSerializer(instance).data
+        return None

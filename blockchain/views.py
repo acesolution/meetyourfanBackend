@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, permission_classes
 from blockchain.utils import w3, contract
 from rest_framework.permissions import IsAuthenticated
 from uuid import uuid4
-from blockchain.models import Transaction, BalanceSnapshot, InfluencerTransaction
+from blockchain.models import Transaction, BalanceSnapshot, InfluencerTransaction, TransactionIssueReport, IssueAttachment
 from blockchain.tasks import _build_and_send, withdraw_for_user_task, save_transaction_info
 from decimal import Decimal, InvalidOperation
 import logging
@@ -28,12 +28,14 @@ from django.views.decorators.csrf import csrf_exempt
 import os
 import json
 from blockchain.utils import get_current_rate_wei
-from .serializers import TransactionSerializer, InfluencerTransactionSerializer
+from .serializers import TransactionSerializer, InfluencerTransactionSerializer, TransactionIssueReportSerializer
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status as drf_status
 from django.utils.dateparse import parse_date
 from django.db.models import Q
-
+from django.contrib.contenttypes.models import ContentType
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,8 @@ GAS_LIMIT    = 200_000
 GAS_PRICE_GWEI = "50"
 SC_ADDRESS = settings.CONTRACT_ADDRESS
 
+
+MAX_BYTES = 5 * 1024 * 1024  # 5MB
 # Load your webhook secret from env
 WERT_WEBHOOK_SECRET = os.getenv('WERT_WEBHOOK_SECRET')
 if not WERT_WEBHOOK_SECRET:
@@ -657,6 +661,55 @@ class UserTransactionsView(APIView):
             )
 
         return Response(response_payload, status=drf_status.HTTP_200_OK)
+    
+    
+class ReportTransactionIssueView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        transaction_type = request.data.get("transaction_type")  # "transaction" or "influencer_transaction"
+        transaction_id = request.data.get("transaction_id")
+        description = request.data.get("description", "").strip()
+
+        if not transaction_id or not description or not transaction_type:
+            return Response({"detail": "transaction_type, transaction_id and description are required."}, status=400)
+
+        # resolve transaction object
+        tx_obj = None
+        if transaction_type == "transaction":
+            try:
+                tx_obj = Transaction.objects.get(pk=transaction_id, user=request.user)
+            except Transaction.DoesNotExist:
+                return Response({"detail": "Transaction not found."}, status=404)
+        elif transaction_type == "influencer_transaction":
+            try:
+                tx_obj = InfluencerTransaction.objects.get(pk=transaction_id, influencer=request.user)
+            except InfluencerTransaction.DoesNotExist:
+                return Response({"detail": "InfluencerTransaction not found."}, status=404)
+        else:
+            return Response({"detail": "Invalid transaction_type."}, status=400)
+
+        with transaction.atomic():
+            report = TransactionIssueReport.objects.create(
+                user=request.user,
+                transaction_hash=tx_obj.tx_hash or "",
+                content_type=ContentType.objects.get_for_model(tx_obj),
+                object_id=str(tx_obj.pk),
+                description=description,
+            )
+
+            # attachment validation example
+            for f in request.FILES.getlist("attachments"):
+                if f.size > 5 * 1024 * 1024:
+                    return Response({"detail": f"File {f.name} too large."}, status=400)
+                IssueAttachment.objects.create(report=report, file=f)
+                
+                
+        serialized = TransactionIssueReportSerializer(report, context={"request": request})
+        return Response(serialized.data, status=201)
+    
+    
 # ──────────────────────────────────────────────────────────────
 # These are your ORM hooks – replace with real implementations
 # ──────────────────────────────────────────────────────────────
