@@ -773,7 +773,7 @@ class InfluencerEarningsView(APIView):
                 Value(0, output_field=DecimalField()),
             ),
         )
-        actual_tt = (release_agg["release_tt"] or Decimal(0)) - (release_agg["refund_tt"] or Decimal(0))
+        actual_tt = (release_agg["release_tt"] or Decimal(0)) 
 
         # Pending (on_hold) TT (completed holds that are not yet released/refunded)
         pending_tt = InfluencerTransaction.objects.filter(
