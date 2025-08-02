@@ -36,7 +36,7 @@ from django.db.models import Q
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction as db_transaction
-from django.db.models import Sum, Case, When, F, DecimalField
+from django.db.models import Sum, Case, When, F, DecimalField, Value
 from django.db.models.functions import Coalesce
 
 
@@ -749,36 +749,51 @@ class InfluencerEarningsView(APIView):
     def get(self, request):
         user = request.user
 
-        # Actual earned TT: release minus refund
-        actual_tt = InfluencerTransaction.objects.filter(
+        base_qs = InfluencerTransaction.objects.filter(
             influencer=user,
             status=InfluencerTransaction.COMPLETED,
-        ).aggregate(
-            actual_tt=Coalesce(
-                Sum(
-                    Case(
-                        When(tx_type=InfluencerTransaction.RELEASE, then=F("tt_amount")),
-                        When(tx_type=InfluencerTransaction.REFUND, then= -F("tt_amount")),
-                        default=0,
-                        output_field=DecimalField(),
-                    )
-                ),
-                0,
-            )
-        )["actual_tt"] or 0
+        )
 
-        # Pending (on_hold) TT
+        # Sum of released TT
+        release_agg = base_qs.aggregate(
+            release_tt=Coalesce(
+                Sum(
+                    "tt_amount",
+                    filter=Q(tx_type=InfluencerTransaction.RELEASE),
+                    output_field=DecimalField(),
+                ),
+                Value(0, output_field=DecimalField()),
+            ),
+            refund_tt=Coalesce(
+                Sum(
+                    "tt_amount",
+                    filter=Q(tx_type=InfluencerTransaction.REFUND),
+                    output_field=DecimalField(),
+                ),
+                Value(0, output_field=DecimalField()),
+            ),
+        )
+        actual_tt = (release_agg["release_tt"] or Decimal(0)) - (release_agg["refund_tt"] or Decimal(0))
+
+        # Pending (on_hold) TT (completed holds that are not yet released/refunded)
         pending_tt = InfluencerTransaction.objects.filter(
             influencer=user,
-            tx_type=InfluencerTransaction.ON_HOLD,
             status=InfluencerTransaction.COMPLETED,
-        ).aggregate(pending_tt=Coalesce(Sum("tt_amount"), 0))["pending_tt"] or 0
+            tx_type=InfluencerTransaction.ON_HOLD,
+        ).aggregate(
+            pending_tt=Coalesce(
+                Sum("tt_amount", output_field=DecimalField()),
+                Value(0, output_field=DecimalField()),
+            )
+        )["pending_tt"] or Decimal(0)
 
         # Net credits
-        net_credits = InfluencerTransaction.objects.filter(
-            influencer=user,
-            status=InfluencerTransaction.COMPLETED,
-        ).aggregate(net_credits=Coalesce(Sum("credits_delta"), 0))["net_credits"] or 0
+        net_credits = base_qs.aggregate(
+            net_credits=Coalesce(
+                Sum("credits_delta", output_field=DecimalField()),
+                Value(0, output_field=DecimalField()),
+            )
+        )["net_credits"] or Decimal(0)
 
         return Response({
             "actual_tt_earned": str(actual_tt),
