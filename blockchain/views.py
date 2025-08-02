@@ -35,7 +35,10 @@ from django.utils.dateparse import parse_date
 from django.db.models import Q
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.parsers import MultiPartParser, FormParser
-from django.db import transaction
+from django.db import transaction as db_transaction
+from django.db.models import Sum, Case, When, F, DecimalField
+from django.db.models.functions import Coalesce
+
 
 logger = logging.getLogger(__name__)
 
@@ -667,30 +670,60 @@ class ReportTransactionIssueView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    def _resolve_tx_obj(self, transaction_type: str, transaction_id: str, user):
+        """
+        Helper that tries to resolve either by numeric PK or tx_hash. Raises the appropriate
+        DoesNotExist if nothing is found, or ValueError if transaction_type is invalid.
+        """
+        if transaction_type == "transaction":
+            qs = Transaction.objects.filter(user=user)
+        elif transaction_type == "influencer_transaction":
+            qs = InfluencerTransaction.objects.filter(influencer=user)
+        else:
+            raise ValueError("Invalid transaction_type.")
+
+        tx_obj = None
+
+        # 1. Try interpreting as primary key (integer)
+        try:
+            pk = int(transaction_id)
+            tx_obj = qs.filter(pk=pk).first()
+        except (ValueError, TypeError):
+            tx_obj = None  # not an integer, fallback to hash lookup
+
+        # 2. If not found yet, try tx_hash (case-insensitive)
+        if tx_obj is None:
+            tx_obj = qs.filter(tx_hash__iexact=transaction_id).first()
+
+        if not tx_obj:
+            # propagate the correct DoesNotExist for caller to catch
+            if transaction_type == "transaction":
+                raise Transaction.DoesNotExist()
+            else:
+                raise InfluencerTransaction.DoesNotExist()
+
+        return tx_obj
+
     def post(self, request):
         transaction_type = request.data.get("transaction_type")  # "transaction" or "influencer_transaction"
         transaction_id = request.data.get("transaction_id")
-        description = request.data.get("description", "").strip()
+        description = (request.data.get("description") or "").strip()
 
-        if not transaction_id or not description or not transaction_type:
-            return Response({"detail": "transaction_type, transaction_id and description are required."}, status=400)
+        if not transaction_type or not transaction_id or not description:
+            return Response(
+                {"detail": "transaction_type, transaction_id and description are required."},
+                status=400,
+            )
 
-        # resolve transaction object
-        tx_obj = None
-        if transaction_type == "transaction":
-            try:
-                tx_obj = Transaction.objects.get(pk=transaction_id, user=request.user)
-            except Transaction.DoesNotExist:
-                return Response({"detail": "Transaction not found."}, status=404)
-        elif transaction_type == "influencer_transaction":
-            try:
-                tx_obj = InfluencerTransaction.objects.get(pk=transaction_id, influencer=request.user)
-            except InfluencerTransaction.DoesNotExist:
-                return Response({"detail": "InfluencerTransaction not found."}, status=404)
-        else:
+        try:
+            tx_obj = self._resolve_tx_obj(transaction_type, transaction_id, request.user)
+        except ValueError:
             return Response({"detail": "Invalid transaction_type."}, status=400)
+        except (Transaction.DoesNotExist, InfluencerTransaction.DoesNotExist):
+            return Response({"detail": "Transaction not found."}, status=404)
 
-        with transaction.atomic():
+        # Create report and attachments atomically
+        with db_transaction.atomic():
             report = TransactionIssueReport.objects.create(
                 user=request.user,
                 transaction_hash=tx_obj.tx_hash or "",
@@ -699,16 +732,59 @@ class ReportTransactionIssueView(APIView):
                 description=description,
             )
 
-            # attachment validation example
+            # attachments
             for f in request.FILES.getlist("attachments"):
-                if f.size > 5 * 1024 * 1024:
-                    return Response({"detail": f"File {f.name} too large."}, status=400)
+                if f.size > 5 * 1024 * 1024:  # 5MB limit
+                    return Response(
+                        {"detail": f"File {f.name} too large. Max is 5MB."}, status=400
+                    )
                 IssueAttachment.objects.create(report=report, file=f)
-                
-                
+
         serialized = TransactionIssueReportSerializer(report, context={"request": request})
         return Response(serialized.data, status=201)
     
+class InfluencerEarningsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # Actual earned TT: release minus refund
+        actual_tt = InfluencerTransaction.objects.filter(
+            influencer=user,
+            status=InfluencerTransaction.COMPLETED,
+        ).aggregate(
+            actual_tt=Coalesce(
+                Sum(
+                    Case(
+                        When(tx_type=InfluencerTransaction.RELEASE, then=F("tt_amount")),
+                        When(tx_type=InfluencerTransaction.REFUND, then= -F("tt_amount")),
+                        default=0,
+                        output_field=DecimalField(),
+                    )
+                ),
+                0,
+            )
+        )["actual_tt"] or 0
+
+        # Pending (on_hold) TT
+        pending_tt = InfluencerTransaction.objects.filter(
+            influencer=user,
+            tx_type=InfluencerTransaction.ON_HOLD,
+            status=InfluencerTransaction.COMPLETED,
+        ).aggregate(pending_tt=Coalesce(Sum("tt_amount"), 0))["pending_tt"] or 0
+
+        # Net credits
+        net_credits = InfluencerTransaction.objects.filter(
+            influencer=user,
+            status=InfluencerTransaction.COMPLETED,
+        ).aggregate(net_credits=Coalesce(Sum("credits_delta"), 0))["net_credits"] or 0
+
+        return Response({
+            "actual_tt_earned": str(actual_tt),
+            "pending_tt": str(pending_tt),
+            "net_credits": str(net_credits),
+        })
     
 # ──────────────────────────────────────────────────────────────
 # These are your ORM hooks – replace with real implementations

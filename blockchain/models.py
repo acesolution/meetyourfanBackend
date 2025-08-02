@@ -216,12 +216,9 @@ class ConversionRate(models.Model):
 class TransactionIssueReport(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     transaction_hash = models.CharField(max_length=100, blank=True)  # keep for convenience / indexing
-
-    # generic link to either Transaction or InfluencerTransaction
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
     object_id = models.CharField(max_length=255, null=True, blank=True)
     transaction = GenericForeignKey("content_type", "object_id")
-
     description = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
