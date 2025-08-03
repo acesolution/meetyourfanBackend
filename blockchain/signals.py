@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 @receiver(post_save, sender=User)
 def auto_register_user(sender, instance, created, **kwargs):
     if created:
-        # Log the instance identifiers so you can see what got used
-        onchain_identifier = getattr(instance, "user_id", None) or instance.id
+        
         logger.info(
             "[auto_register_user] new User created: django_pk=%s, user.user_id=%s => using on-chain id=%s",
             instance.pk,
-            getattr(instance, "user_id", None),
-            onchain_identifier,
+            instance.user_id,
+            instance.id,
+            sender
         )
         # built‑in: wait until the DB transaction commits
         transaction.on_commit(lambda: chain(
