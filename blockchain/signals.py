@@ -16,17 +16,19 @@ logger = logging.getLogger(__name__)
 def auto_register_user(sender, instance, created, **kwargs):
     if created:
         
-        logger.info(
-            "[auto_register_user] new User created: django_pk=%s, user.user_id=%s => using on-chain id=%s",
-            instance.pk,
-            instance.user_id,
-            instance.id,
-            sender
-        )
+        
         # built‑in: wait until the DB transaction commits
         transaction.on_commit(lambda: chain(
             # 1) registerUser call → returns tx_hash
+            
             register_user_on_chain.s(instance.id),
+            logger.info(
+                "[auto_register_user] new User created: django_pk=%s, user.user_id=%s => using on-chain id=%s",
+                instance.pk,
+                instance.user_id,
+                instance.id,
+                sender
+            ),
 
             # 2) save the OnChainAction once that hash is available:
             save_onchain_action_info.s(
