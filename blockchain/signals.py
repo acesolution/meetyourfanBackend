@@ -15,12 +15,12 @@ def auto_register_user(sender, instance, created, **kwargs):
         # built‑in: wait until the DB transaction commits
         transaction.on_commit(lambda: chain(
             # 1) registerUser call → returns tx_hash
-            register_user_on_chain.s(instance.id),
+            register_user_on_chain.s(instance.user_id),
 
             # 2) save the OnChainAction once that hash is available:
             save_onchain_action_info.s(
                 # the tx_hash comes in automatically as the *first* arg here
-                instance.id,                    # user_id
+                instance.user_id,                    # user_id
                 None,                           # campaign_id (none for user)
                 OnChainAction.USER_REGISTERED,  # event_type
                 {}                              # args payload
