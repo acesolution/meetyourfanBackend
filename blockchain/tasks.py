@@ -161,6 +161,11 @@ def save_onchain_action_info(
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def register_user_on_chain(self, user_id):
     try:
+        # log separately — do not put this inside the chain
+        logger.info(
+            "Registering user %d on chain", 
+            user_id
+        )
         chain_id = w3.eth.chain_id
         nonce    = w3.eth.get_transaction_count(OWNER)
         tx_params= {
