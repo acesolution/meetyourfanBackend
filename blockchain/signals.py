@@ -6,12 +6,23 @@ from .tasks import register_user_on_chain,save_onchain_action_info
 from django.db import transaction
 from blockchain.models      import OnChainAction
 from celery import chain
+import logging
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
+
 
 @receiver(post_save, sender=User)
 def auto_register_user(sender, instance, created, **kwargs):
     if created:
+        # Log the instance identifiers so you can see what got used
+        onchain_identifier = getattr(instance, "user_id", None) or instance.id
+        logger.info(
+            "[auto_register_user] new User created: django_pk=%s, user.user_id=%s => using on-chain id=%s",
+            instance.pk,
+            getattr(instance, "user_id", None),
+            onchain_identifier,
+        )
         # built‑in: wait until the DB transaction commits
         transaction.on_commit(lambda: chain(
             # 1) registerUser call → returns tx_hash

@@ -311,7 +311,7 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
         raise self.retry(exc=exc)
 
     
-@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+@shared_task(bind=True, max_retries=5, default_retry_delay=5)
 def register_campaign_on_chain(self, campaign_id, seller_id):
     from campaign.models import EscrowRecord, Campaign
     from web3.exceptions import ContractLogicError, TimeExhausted
