@@ -158,6 +158,11 @@ class MediaFile(models.Model):
     preview_image = models.ImageField(upload_to='media/public/campaign_media/previews/', blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
+    def get_preview_url(self):
+        # FileField.preview_image lives in your public “/previews/” bucket path.
+        # .url is a built-in property that calls your storage backend’s .url()
+        return self.preview_image.url
+    
     def __str__(self):
         return f"Media for {self.campaign.title}"
 

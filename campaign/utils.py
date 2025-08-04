@@ -7,6 +7,7 @@ from django.db.models import Sum, Count, Q
 from .models import MediaAccess, MediaFile
 from django.db.utils import IntegrityError
 import random
+import boto3
 
 def select_random_winners(campaign_id):
     from campaign.models import Campaign, Participation, CampaignWinner
@@ -116,3 +117,23 @@ def assign_media_to_user(campaign, user, quantity: int):
             if created:
                 assigned.append(media)
     return assigned
+
+
+
+
+def generate_presigned_s3_url(key: str, expires_in: int = 3600):
+    """
+    Built-in boto3.client(‘s3’).generate_presigned_url()
+    returns a time-limited URL to GET a private object.
+    """
+    client = boto3.client(
+        's3',
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_S3_REGION_NAME,
+    )
+    return client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': key},
+        ExpiresIn=expires_in,
+    )

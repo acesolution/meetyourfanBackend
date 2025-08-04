@@ -45,7 +45,7 @@ import logging
 from blockchain.utils import w3, contract
 from web3.exceptions import ContractLogicError, TimeExhausted
 import time
-from campaign.utils import select_random_winners, get_or_create_winner_conversation, assign_media_to_user
+from campaign.utils import select_random_winners, get_or_create_winner_conversation, assign_media_to_user, generate_presigned_s3_url
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
 from django.db import transaction
 from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info, save_transaction_info
@@ -468,25 +468,27 @@ class ParticipateInCampaignView(APIView):
         if campaign.campaign_type == 'media_selling':
             media_requested = serializer.validated_data.get("media_purchased", 0)
             assigned_media = assign_media_to_user(campaign, user, media_requested)
-
-        # Build response payload: include what media was unlocked (IDs, preview URLs; signed URL separately)
+        
         media_info = []
-        for mf in assigned_media:
+        for media in assigned_media:
+            # built-in: .get_preview_url returns the public preview image URL
+            preview = media.get_preview_url()
+
+            # built-in: .file.name is the S3 “key” under your bucket
+            signed = generate_presigned_s3_url(media.file.name)
+
             media_info.append({
-                "media_file_id": mf.id,
-                "preview_url": mf.get_preview_url(),  # implement this helper on MediaFile to expose blurred/public preview
-                # don't include full signed URL here; fetch via separate endpoint for extra control
+                "media_file_id": media.id,
+                "preview_url": preview,
+                "signed_url": signed,
             })
 
-        return Response(
-            {
-                "message": "Participation successful",
-                "participation": serializer.data,
-                "assigned_media": media_info,
-            },
-            status=201,
-        )
-        
+        return Response({
+            "message": "Participation successful",
+            "participation": serializer.data,   # built-in: .data comes from the DRF serializer
+            "assigned_media": media_info,
+        }, status=201)
+            
 class UserMediaAccessListView(ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MediaAccessSerializer
