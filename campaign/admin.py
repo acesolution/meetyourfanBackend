@@ -7,7 +7,6 @@ from campaign.models import (
     Participation, 
     CampaignWinner,
     MediaFile,  # <-- Added MediaFile
-    PurchasedMedia,
     EscrowRecord,
     CreditSpend
 )
@@ -115,15 +114,6 @@ class MediaFileAdmin(admin.ModelAdmin):
     list_display = ('id', 'campaign', 'file', 'uploaded_at')
     list_filter = ('campaign', 'uploaded_at')
     search_fields = ('campaign__title',)
-
-
-@admin.register(PurchasedMedia)
-class PurchasedMediaAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'media_file', 'purchased_at')
-    list_filter = ('purchased_at', 'user')
-    search_fields = ('user__username', 'media_file__file')
-    
-    
     
 @admin.register(EscrowRecord)
 class EscrowRecordAdmin(admin.ModelAdmin):

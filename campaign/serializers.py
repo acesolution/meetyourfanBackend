@@ -157,7 +157,7 @@ class MediaFileSerializer(serializers.ModelSerializer):
         # If the requesting user is the campaign creator, they have access.
         if obj.campaign.user == user:
             return True
-        # Otherwise, check if there's a PurchasedMedia record for this user and file.
+        # Otherwise, check if there's a  record for this user and file.
         return obj.purchases.filter(user=user).exists()
 
 # Update MediaSellingCampaignSerializer similarly
