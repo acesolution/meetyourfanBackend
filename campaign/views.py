@@ -18,7 +18,8 @@ from .serializers import (
     UpdateMediaSellingCampaignSerializer,
     PolymorphicCampaignDetailSerializer,
     ProfileCampaignSerializer,
-    UserCampaignSerializer
+    UserCampaignSerializer,
+    MediaAccessSerializer
 )
 import random
 from .models import (   
@@ -31,7 +32,8 @@ from .models import (
     MediaFile,
     PurchasedMedia,
     CreditSpend,
-    EscrowRecord
+    EscrowRecord,
+    MediaAccess
 )
 from django.core.mail import send_mail
 from django.utils.timezone import now
@@ -44,12 +46,16 @@ import logging
 from blockchain.utils import w3, contract
 from web3.exceptions import ContractLogicError, TimeExhausted
 import time
-from campaign.utils import select_random_winners, get_or_create_winner_conversation
+from campaign.utils import select_random_winners, get_or_create_winner_conversation, assign_media_to_user
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
 from django.db import transaction
 from blockchain.tasks import release_all_holds_for_campaign_task, refund_all_holds_for_campaign_task, save_onchain_action_info, save_transaction_info
 from celery import chain
 from blockchain.models import OnChainAction, Transaction
+from rest_framework.generics import ListAPIView
+from django.shortcuts import get_object_or_404
+from campaign.cloudfront_signer import generate_cloudfront_signed_url
+
 
 User = get_user_model()
 
@@ -455,15 +461,43 @@ class ParticipateInCampaignView(APIView):
                 credits_delta=cost_in_credits,
             ),
         ).apply_async()
+        
+        # ---------------------
+        # NEW: grant media access
+        # ---------------------
+        assigned_media = []
+        if isinstance(campaign, MediaSellingCampaign):
+            media_requested = serializer.validated_data.get("media_purchased", 0)
+            assigned_media = assign_media_to_user(campaign, user, media_requested)
+
+        # Build response payload: include what media was unlocked (IDs, preview URLs; signed URL separately)
+        media_info = []
+        for mf in assigned_media:
+            media_info.append({
+                "media_file_id": mf.id,
+                "preview_url": mf.get_preview_url(),  # implement this helper on MediaFile to expose blurred/public preview
+                # don't include full signed URL here; fetch via separate endpoint for extra control
+            })
+
         return Response(
             {
                 "message": "Participation successful",
-                
                 "participation": serializer.data,
+                "assigned_media": media_info,
             },
             status=201,
         )
+        
+class UserMediaAccessListView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MediaAccessSerializer
 
+    def get_queryset(self):
+        campaign_id = self.kwargs["campaign_id"]
+        return MediaAccess.objects.filter(
+            user=self.request.user,
+            media_file__campaign_id=campaign_id  # assuming relation
+        )
 
 class ParticipantsView(APIView):
     permission_classes = []  # or use [AllowAny] if you want open access
@@ -689,3 +723,14 @@ class InfluencerWinnersView(APIView):
         # Serialize the results. (You may want to extend CampaignWinnerSerializer to include more details.)
         serializer = CampaignWinnerSerializer(winners, many=True, context={'request': request})
         return Response({'winners': serializer.data}, status=status.HTTP_200_OK)
+    
+    
+class MediaFileSignedURLView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, access_id):
+        access = get_object_or_404(MediaAccess, id=access_id, user=request.user)
+        media_path = access.media_file.file.name  # S3 key path
+        resource_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{media_path}"
+        signed_url = generate_cloudfront_signed_url(resource_url, expire_seconds=300)
+        return Response({"signed_url": signed_url})

@@ -81,8 +81,6 @@ class TicketCampaign(Campaign):
 class MediaSellingCampaign(Campaign):
     media_cost = models.DecimalField(max_digits=10, decimal_places=2)
     total_media = models.PositiveIntegerField()
-    media_file = models.FileField(upload_to='media/private/campaign_media/', blank=True, null=True)
-
 
 class MeetAndGreetCampaign(Campaign):
     ticket_cost = models.DecimalField(max_digits=10, decimal_places=2)
@@ -154,7 +152,8 @@ class MediaFile(models.Model):
     campaign = models.ForeignKey(
         MediaSellingCampaign, on_delete=models.CASCADE, related_name="media_files"
     )
-    file = models.FileField(upload_to='campaign_media/')
+    file = models.FileField(upload_to='media/private/campaign_media/')
+    preview_image = models.ImageField(upload_to='media/public/campaign_media/previews/', blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
@@ -231,3 +230,24 @@ class EscrowRecord(models.Model):
         null=True,
         help_text="Celery task ID for on-chain registration"
     )
+
+
+
+class MediaAccess(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE, 
+        related_name="media_accesses"
+    )
+    media_file = models.ForeignKey(
+        "MediaFile",
+        on_delete=models.CASCADE,
+        related_name="accesses",  # plural because many users can have the same file
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "media_file")  # ensure a user can't get the same media twice
+
+    def __str__(self):
+        return f"{self.user} -> {self.media_file}"

@@ -1,7 +1,7 @@
 # compaign/serializers.py
 
 from rest_framework import serializers
-from .models import Campaign, TicketCampaign, MediaSellingCampaign, MeetAndGreetCampaign, Participation, CampaignWinner, MediaFile
+from .models import Campaign, TicketCampaign, MediaSellingCampaign, MediaAccess, MeetAndGreetCampaign, Participation, CampaignWinner, MediaFile
 from django.utils import timezone 
 from django.contrib.auth import get_user_model
 from django.utils.timezone import now
@@ -497,3 +497,17 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
         return base_data
     
     
+
+class MediaAccessSerializer(serializers.ModelSerializer):
+    media_file_id = serializers.IntegerField(source='media_file.id', read_only=True)
+    preview_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MediaAccess
+        fields = ['id', 'media_file_id', 'preview_url', 'created_at']
+
+    def get_preview_url(self, obj):
+        request = self.context.get("request")
+        if obj.media_file.preview_image:
+            return request.build_absolute_uri(obj.media_file.preview_image.url)
+        return None

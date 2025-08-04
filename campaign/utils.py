@@ -4,7 +4,9 @@ from django.conf import settings
 from django.db import transaction
 import numpy as np
 from django.db.models import Sum, Count, Q
-
+from campaign.models import MediaSellingCampaign
+from .models import MediaAccess, MediaFile
+from django.db.utils import IntegrityError
 
 def select_random_winners(campaign_id):
     from campaign.models import Campaign, Participation, CampaignWinner
@@ -83,3 +85,26 @@ def get_or_create_winner_conversation(influencer, winner):
         conversation = Conversation.objects.create(category='winner')
         conversation.participants.add(influencer, winner)
     return conversation
+
+
+
+def assign_media_to_user(campaign: MediaSellingCampaign, user, quantity: int):
+    """
+    Give the user up to `quantity` random media files from the campaign they don't already own.
+    Multiple users can own the same media_file, but a user can't get duplicates.
+    """
+    # All media in campaign that the user doesn't already have access to
+    available_qs = MediaFile.objects.filter(campaign=campaign).exclude(accesses__user=user)
+
+    media_ids = list(available_qs.values_list("id", flat=True))
+    random.shuffle(media_ids)
+
+    assigned = []
+    for media_id in media_ids[:quantity]:
+        with transaction.atomic():
+            media = MediaFile.objects.select_for_update().get(pk=media_id)
+            # get_or_create guards against race where two parallel requests try to give same user same file
+            ma, created = MediaAccess.objects.get_or_create(user=user, media_file=media)
+            if created:
+                assigned.append(media)
+    return assigned

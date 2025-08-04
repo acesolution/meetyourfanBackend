@@ -3,7 +3,7 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
-from campaign.models import Participation, Campaign, CampaignWinner
+from campaign.models import Participation, Campaign, CampaignWinner, MediaFile
 from notificationsapp.models import Notification
 from messagesapp.models import Conversation, Message  # if needed for target info
 from channels.layers import get_channel_layer
@@ -11,6 +11,9 @@ from asgiref.sync import async_to_sync
 import logging
 from django.db.models import Count
 from .views import get_or_create_winner_conversation
+from PIL import Image, ImageFilter
+from io import BytesIO
+from django.core.files.base import ContentFile
 
 logger = logging.getLogger(__name__)
 
@@ -140,3 +143,29 @@ def notify_winner_selection(sender, instance, created, **kwargs):
             sender=influencer,
             content=f"Congratulations! You have been selected as a winner for the campaign: {campaign.title}"
         )
+
+
+
+@receiver(post_save, sender=MediaFile)
+def create_blurred_preview(sender, instance, created, **kwargs):
+    if not created:
+        return
+
+    try:
+        original = Image.open(instance.file.path)
+        original.thumbnail((400, 400))  # small size
+        blurred = original.filter(ImageFilter.GaussianBlur(radius=12))
+
+        buffer = BytesIO()
+        blurred.save(buffer, format="JPEG", quality=50)
+        buffer.seek(0)
+        # Assume MediaFile has a `preview_image = ImageField(...)` for public thumbnail.
+        instance.preview_image.save(
+            f"preview_{instance.file.name.split('/')[-1]}.jpg",
+            ContentFile(buffer.read()),
+            save=False
+        )
+        instance.save(update_fields=["preview_image"])
+    except Exception:
+        # log but do not break upload
+        pass
