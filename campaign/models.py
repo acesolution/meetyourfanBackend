@@ -4,11 +4,11 @@ from django.db import models
 from django.conf import settings
 from decimal import Decimal
 from django.db import transaction
-from campaign.utils import select_random_winners
 from django.utils import timezone
 from blockchain.tasks import release_all_holds_for_campaign_task
 
 class Campaign(models.Model):
+    
     CAMPAIGN_TYPE_CHOICES = [
         ('ticket', 'Ticket'),
         ('media_selling', 'Media Selling'),
@@ -47,6 +47,8 @@ class Campaign(models.Model):
 
     def close_campaign(self):
         """Mark the campaign as closed and select winners if required."""
+        from campaign.utils import select_random_winners
+        
         with transaction.atomic():
             if self.is_closed:
                 return
@@ -159,26 +161,6 @@ class MediaFile(models.Model):
     def __str__(self):
         return f"Media for {self.campaign.title}"
 
-
-class PurchasedMedia(models.Model):
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, 
-        on_delete=models.CASCADE, 
-        related_name='purchased_media'
-    )
-    media_file = models.ForeignKey(
-        'MediaFile',  # or from campaign.models import MediaFile if needed
-        on_delete=models.CASCADE, 
-        related_name='purchases'
-    )
-    purchased_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('user', 'media_file')
-    
-    def __str__(self):
-        return f"{self.user.username} purchased {self.media_file}"
-    
     
 class CreditSpend(models.Model):
     PARTICIPATION = 'participation'

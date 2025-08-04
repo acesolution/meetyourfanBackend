@@ -30,7 +30,6 @@ from .models import (
     MediaSellingCampaign,
     CampaignWinner,
     MediaFile,
-    PurchasedMedia,
     CreditSpend,
     EscrowRecord,
     MediaAccess
@@ -466,7 +465,7 @@ class ParticipateInCampaignView(APIView):
         # NEW: grant media access
         # ---------------------
         assigned_media = []
-        if isinstance(campaign, MediaSellingCampaign):
+        if campaign.campaign_type == 'media_selling':
             media_requested = serializer.validated_data.get("media_purchased", 0)
             assigned_media = assign_media_to_user(campaign, user, media_requested)
 
