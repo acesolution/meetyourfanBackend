@@ -88,16 +88,19 @@ def get_or_create_winner_conversation(influencer, winner):
 
 
 
-def assign_media_to_user(user, quantity: int):
+def assign_media_to_user(campaign, user, quantity: int):
     """
-    Give the user up to `quantity` random media files from the campaign they don't already own.
-    Multiple users can own the same media_file, but a user can't get duplicates.
+    Give the user up to `quantity` random media files from the given campaign that they don't already own.
+    Multiple users can own the same media_file, but a user can't get duplicates of the same file.
     """
-    from campaign.models import MediaSellingCampaign as campaign
-    
-    # All media in campaign that the user doesn't already have access to
-    available_qs = MediaFile.objects.filter(campaign=campaign).exclude(accesses__user=user)
+    # 1) Filter all media for this campaign that the user doesn’t already have
+    available_qs = (
+        MediaFile.objects
+        .filter(campaign=campaign)
+        .exclude(accesses__user=user)
+    )
 
+    # 2) Shuffle and pick up to `quantity` IDs
     media_ids = list(available_qs.values_list("id", flat=True))
     random.shuffle(media_ids)
 
@@ -105,8 +108,11 @@ def assign_media_to_user(user, quantity: int):
     for media_id in media_ids[:quantity]:
         with transaction.atomic():
             media = MediaFile.objects.select_for_update().get(pk=media_id)
-            # get_or_create guards against race where two parallel requests try to give same user same file
-            ma, created = MediaAccess.objects.get_or_create(user=user, media_file=media)
+            # get_or_create prevents duplicates per user due to unique_together
+            ma, created = MediaAccess.objects.get_or_create(
+                user=user,
+                media_file=media
+            )
             if created:
                 assigned.append(media)
     return assigned
