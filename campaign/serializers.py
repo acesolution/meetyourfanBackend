@@ -149,16 +149,11 @@ class MediaFileSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.file.url)
         return obj.file.url
 
-    def get_has_access(self, obj):
+    def get_has_access(self, obj: MediaFile):
         request = self.context.get("request")
-        if not request or not request.user.is_authenticated:
+        if not request or not getattr(request, "user", None) or not request.user.is_authenticated:
             return False
-        user = request.user
-        # If the requesting user is the campaign creator, they have access.
-        if obj.campaign.user == user:
-            return True
-        # Otherwise, check if there's a  record for this user and file.
-        return obj.purchases.filter(user=user).exists()
+        return MediaAccess.objects.filter(user=request.user, media_file=obj).exists()
 
 # Update MediaSellingCampaignSerializer similarly
 class MediaSellingCampaignSerializer(serializers.ModelSerializer):
