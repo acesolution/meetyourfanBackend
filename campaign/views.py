@@ -467,6 +467,7 @@ class ParticipateInCampaignView(APIView):
         assigned_media = []
         if campaign.campaign_type == 'media_selling':
             media_requested = serializer.validated_data.get("media_purchased", 0)
+            logger.info("Assigning %d media files to user %s for campaign %s", media_requested, user.username, campaign.id)
             assigned_media = assign_media_to_user(campaign, user, media_requested)
         
         media_info = []
