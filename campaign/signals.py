@@ -135,7 +135,6 @@ def notify_winner_selection(sender, instance, created, **kwargs):
         # --- Conversation Setup ---
         # Use the helper function to get (or update) the conversation regardless of its current category.
         conversation = get_or_create_winner_conversation(influencer, winner)
-        logger.info(f"Conversation ID {conversation.id} between {influencer.username} and {winner.username} set to category 'winner'.")
 
         # Create an initial congratulatory message.
         Message.objects.create(

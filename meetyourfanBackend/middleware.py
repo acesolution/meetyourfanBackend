@@ -30,17 +30,13 @@ class JWTAuthMiddleware:
                 raise ValueError("Token not found in query string")
 
             token = token[0]  # Extract the token from the list
-            logger.debug(f"Token received: {token}")
 
             # Decode the token to extract user information
             data = jwt_decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-            logger.debug(f"Token payload: {data}")
 
             # Retrieve the user from the database and attach to scope
             scope['user'] = await self.get_user(data['user_id'])
-            logger.debug(f"Authenticated user: {scope['user']}")
         except Exception as e:
-            logger.error(f"JWT Authentication failed: {e}")
             scope['user'] = AnonymousUser()
         return await self.app(scope, receive, send)
 

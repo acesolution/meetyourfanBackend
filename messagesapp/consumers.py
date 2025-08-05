@@ -23,10 +23,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """Accept or reject WebSocket connection based on user authentication."""
         self.user = self.scope['user']
-        logger.debug(f"User in connect: {self.user}")
+        #logger.debug(f"User in connect: {self.user}")
 
         if not self.user.is_authenticated:
-            logger.error("Unauthenticated user attempted to connect.")
+            #logger.error("Unauthenticated user attempted to connect.")
             await self.close()  # Reject unauthenticated connections
             return
 

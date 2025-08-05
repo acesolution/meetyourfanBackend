@@ -46,7 +46,6 @@ def _ensure_prefixed(tx_hash: str) -> str:
         return ""
     if not tx_hash.startswith("0x"):
         normalized = f"0x{tx_hash}"
-        logger.debug("Normalized tx_hash from %s to %s", tx_hash, normalized)
         return normalized
     return tx_hash
 
@@ -155,17 +154,11 @@ def save_onchain_action_info(
         args=args or {},
     )
     
-    
-    
-    
+        
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def register_user_on_chain(self, user_id):
     try:
-        # log separately — do not put this inside the chain
-        logger.info(
-            "Registering user %d on chain", 
-            user_id
-        )
+        
         chain_id = w3.eth.chain_id
         nonce    = w3.eth.get_transaction_count(OWNER)
         tx_params= {

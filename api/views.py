@@ -992,9 +992,7 @@ class GuestCampaignPurchaseView(APIView):
     permission_classes = []  # AllowAny
 
     def post(self, request):
-        # 1) Log the incoming payload
-        logger.info("Guest registration payload: %s", request.data)
-
+       
         # 2) Validate registration fields
         serializer = RegisterSerializer(data={
             "username": request.data.get("name") or request.data.get("username"),
@@ -1003,7 +1001,6 @@ class GuestCampaignPurchaseView(APIView):
         })
 
         if not serializer.is_valid():
-            logger.warning("Registration validation errors: %s", serializer.errors)
             return Response({"errors": serializer.errors},
                             status=status.HTTP_400_BAD_REQUEST)
 
@@ -1014,9 +1011,7 @@ class GuestCampaignPurchaseView(APIView):
             # 4) Fire off the smart-contract registration in the background
             try:
                 tx_hash = register_user_on_chain.delay(user.user_id)
-                logger.info("On-chain registration succeeded, tx_hash=%s", tx_hash)
             except Exception as e:
-                logger.error("On-chain registration failed", exc_info=True)
                 return Response(
                     {"error": "Blockchain registration failed", "details": str(e)},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -1058,7 +1053,6 @@ class GuestCampaignPurchaseView(APIView):
             }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            logger.exception("Unexpected error during guest registration")
             return Response(
                 {"error": "Server error", "details": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR

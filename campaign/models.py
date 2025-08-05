@@ -5,6 +5,7 @@ from django.conf import settings
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
+from .utils import generate_presigned_s3_url
 from blockchain.tasks import release_all_holds_for_campaign_task
 
 class Campaign(models.Model):
@@ -159,8 +160,11 @@ class MediaFile(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def get_preview_url(self):
-        # FileField.preview_image lives in your public “/previews/” bucket path.
-        # .url is a built-in property that calls your storage backend’s .url()
+        # built-in: self.preview_image returns a FieldFile, falsy if no file
+        if not self.preview_image:
+            # fallback to a short-lived signed URL for the real file
+            return generate_presigned_s3_url(self.file.name)
+        # built-in: .url calls your storage backend’s url() method
         return self.preview_image.url
     
     def __str__(self):

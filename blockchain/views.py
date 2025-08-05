@@ -161,7 +161,6 @@ class MyBalancesView(APIView):
 
     def get(self, request):
         user_id = int(request.user.user_id)
-        logger.error("Fetching balances for user_id: %s", user_id)
         
         try:
             # Returns (tt_bal, credit_bal) in wei
@@ -259,7 +258,6 @@ class WithdrawView(APIView):
 
         # 3) enqueue the on‐chain withdraw
         task = withdraw_for_user_task.delay(user_id, credits)
-        logger.info(f"Scheduled withdraw_for_user_task {task.id} for user {user_id}, credits={credits}")
 
         # 4) clear the one-time OTP flags so it can’t be reused
         vc.withdraw_email_verified = vc.withdraw_phone_verified = False
@@ -327,7 +325,6 @@ class WithdrawVerifyRequestCodeView(APIView):
             verification.save()
 
             # TODO: integrate your SMS gateway here
-            logger.info(f"SMS to {request.user.profile.phone_number}: code={code}")
 
         return Response({"message": "Verification code sent."}, status=status.HTTP_200_OK)
     
