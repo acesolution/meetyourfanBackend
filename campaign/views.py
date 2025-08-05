@@ -472,8 +472,12 @@ class ParticipateInCampaignView(APIView):
         
         media_info = []
         for media in assigned_media:
-            # built-in: .get_preview_url returns the public preview image URL
-            preview = media.get_preview_url()
+            try:
+                # built-in: calls our model helper, which may raise ValueError
+                preview = media.get_preview_url()
+            except ValueError:
+                # fallback again
+                preview = generate_presigned_s3_url(media.file.name)
 
             # built-in: .file.name is the S3 “key” under your bucket
             signed = generate_presigned_s3_url(media.file.name)
