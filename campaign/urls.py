@@ -15,7 +15,8 @@ from .views import (
     InfluencerWinnersView,
     DashboardView,
     CampaignDashboardDetailView,
-    FanAnalyticsView
+    FanAnalyticsView,
+    UserMediaAccessListView
 )
 
 urlpatterns = [
@@ -34,5 +35,6 @@ urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('dashboard/campaign/<int:campaign_id>/', CampaignDashboardDetailView.as_view(), name='campaign-dashboard-detail'),
     path('fan/analytics/', FanAnalyticsView.as_view(), name='fan-analytics'),
+    path('view/<int:campaign_id>/media-access/', UserMediaAccessListView.as_view(), name='media-access'),
 ]
 
