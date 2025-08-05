@@ -4,7 +4,7 @@ from django.conf import settings
 from django.db import transaction
 import numpy as np
 from django.db.models import Sum, Count, Q
-from .models import MediaAccess, MediaFile
+
 from django.db.utils import IntegrityError
 import random
 import boto3
@@ -94,6 +94,7 @@ def assign_media_to_user(campaign, user, quantity: int):
     Give the user up to `quantity` random media files from the given campaign that they don't already own.
     Multiple users can own the same media_file, but a user can't get duplicates of the same file.
     """
+    from .models import MediaAccess, MediaFile
     # 1) Filter all media for this campaign that the user doesn’t already have
     available_qs = (
         MediaFile.objects
