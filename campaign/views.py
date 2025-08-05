@@ -485,7 +485,6 @@ class ParticipateInCampaignView(APIView):
             media_info.append({
                 "media_file_id": media.id,
                 "preview_url": preview,
-                "signed_url": signed,
             })
 
         return Response({
