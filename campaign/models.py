@@ -160,8 +160,9 @@ class MediaFile(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def get_preview_url(self):
-        # built-in: .url calls your storage backend’s url() method
-        return self.preview_image.url
+        if self.preview_image and hasattr(self.preview_image, 'url'):
+            return self.preview_image.url
+        return None
     
     def __str__(self):
         return f"Media for {self.campaign.title}"
