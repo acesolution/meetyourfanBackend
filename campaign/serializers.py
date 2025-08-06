@@ -154,12 +154,9 @@ class MediaFileSerializer(serializers.ModelSerializer):
         return None
 
     def get_preview_url(self, obj):
-        # Always return preview image URL for non-paid users
-        if obj.preview_image:
-            return obj.preview_image.url
-        # fallback to a signed URL for the original file (if no preview)
-        return generate_presigned_s3_url(obj.file.name)
-
+        return obj.preview_image.url
+    
+    
 # Update MediaSellingCampaignSerializer similarly
 class MediaSellingCampaignSerializer(serializers.ModelSerializer):
     user = UserCampaignSerializer(read_only=True)  # override the user field

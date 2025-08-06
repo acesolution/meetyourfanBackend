@@ -160,10 +160,6 @@ class MediaFile(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def get_preview_url(self):
-        # built-in: self.preview_image returns a FieldFile, falsy if no file
-        if not self.preview_image:
-            # fallback to a short-lived signed URL for the real file
-            return self.file.id
         # built-in: .url calls your storage backend’s url() method
         return self.preview_image.url
     
