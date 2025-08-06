@@ -228,7 +228,7 @@ class MediaAccess(models.Model):
         related_name="media_accesses"
     )
     media_file = models.ForeignKey(
-        "MediaFile",
+        MediaFile,
         on_delete=models.CASCADE,
         related_name="accesses",  # plural because many users can have the same file
     )

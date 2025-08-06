@@ -66,6 +66,8 @@ from django.shortcuts import get_object_or_404
 from campaign.cloudfront_signer import generate_cloudfront_signed_url
 from django.http import StreamingHttpResponse
 import boto3
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.decorators import parser_classes
 
 User = get_user_model()
 
@@ -297,7 +299,7 @@ class CampaignDashboardDetailView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
-
+@parser_classes([MultiPartParser, FormParser]) 
 class CreateCampaignView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -323,12 +325,16 @@ class CreateCampaignView(APIView):
         # If it’s a media_selling campaign, handle uploaded files as before:
         if campaign.campaign_type == "media_selling":
             files = request.FILES.getlist("media_files")
-            for file in files:
-                media_file = MediaFile(campaign=campaign, file=file)
+            for f in files:
+                media_file = MediaFile(campaign=campaign, file=f)
                 media_file.save()
                 # Grant access to the influencer (campaign creator)
-                MediaAccess.objects.get_or_create(user=user, media_file=media_file)
-            campaign.save()
+                media_access, created = MediaAccess.objects.get_or_create(
+                    user=user,
+                    media_file=media_file
+                )  # get_or_create(): returns (obj, created_bool)
+                logger.debug(f"MediaAccess created={created} id={media_access.id}")
+                
             response_serializer = MediaSellingCampaignSerializer(
                 campaign, context={"request": request}
             )
