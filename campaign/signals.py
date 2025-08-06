@@ -151,20 +151,21 @@ def create_blurred_preview(sender, instance, created, **kwargs):
         return
 
     try:
-        original = Image.open(instance.file.path)
-        original.thumbnail((400, 400))  # small size
-        blurred = original.filter(ImageFilter.GaussianBlur(radius=12))
+        # Use instance.file.open() for remote storage
+        with instance.file.open('rb') as f:
+            original = Image.open(f)
+            original.thumbnail((400, 400))  # small size
+            blurred = original.filter(ImageFilter.GaussianBlur(radius=12))
 
-        buffer = BytesIO()
-        blurred.save(buffer, format="JPEG", quality=50)
-        buffer.seek(0)
-        # Assume MediaFile has a `preview_image = ImageField(...)` for public thumbnail.
-        instance.preview_image.save(
-            f"preview_{instance.file.name.split('/')[-1]}.jpg",
-            ContentFile(buffer.read()),
-            save=False
-        )
-        instance.save(update_fields=["preview_image"])
-    except Exception:
+            buffer = BytesIO()
+            blurred.save(buffer, format="JPEG", quality=50)
+            buffer.seek(0)
+            instance.preview_image.save(
+                f"preview_{instance.file.name.split('/')[-1]}.jpg",
+                ContentFile(buffer.read()),
+                save=False
+            )
+            instance.save(update_fields=["preview_image"])
+    except Exception as e:
         # log but do not break upload
-        pass
+        logger.exception("Failed to create blurred preview: %s", e)

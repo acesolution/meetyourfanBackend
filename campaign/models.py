@@ -155,15 +155,15 @@ class MediaFile(models.Model):
     campaign = models.ForeignKey(
         MediaSellingCampaign, on_delete=models.CASCADE, related_name="media_files"
     )
-    file = models.FileField(upload_to='media/private/campaign_media/')
-    preview_image = models.ImageField(upload_to='media/public/campaign_media/previews/', blank=True, null=True)
+    file = models.FileField(upload_to='media/private/campaign_media/paid/')
+    preview_image = models.ImageField(upload_to='media/private/campaign_media/previews/', blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def get_preview_url(self):
         # built-in: self.preview_image returns a FieldFile, falsy if no file
         if not self.preview_image:
             # fallback to a short-lived signed URL for the real file
-            return generate_presigned_s3_url(self.file.name)
+            return self.file.id
         # built-in: .url calls your storage backend’s url() method
         return self.preview_image.url
     
