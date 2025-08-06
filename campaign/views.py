@@ -325,6 +325,7 @@ class CreateCampaignView(APIView):
         # If it’s a media_selling campaign, handle uploaded files as before:
         if campaign.campaign_type == "media_selling":
             files = request.FILES.getlist("media_files")
+            logger.debug(f"Media files ={files}")
             for f in files:
                 media_file = MediaFile(campaign=campaign, file=f)
                 media_file.save()
