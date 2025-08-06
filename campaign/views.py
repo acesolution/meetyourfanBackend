@@ -54,7 +54,8 @@ from blockchain.models import OnChainAction, Transaction
 from rest_framework.generics import ListAPIView
 from django.shortcuts import get_object_or_404
 from campaign.cloudfront_signer import generate_cloudfront_signed_url
-
+from django.http import StreamingHttpResponse
+import boto3
 
 User = get_user_model()
 
@@ -502,6 +503,40 @@ class UserMediaAccessListView(ListAPIView):
             user=self.request.user,
             media_file__campaign_id=campaign_id  # assuming relation
         )
+        
+        
+class MediaDownloadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, media_id):
+        # 1) fetch & authz
+        try:
+            media = MediaFile.objects.get(pk=media_id)
+        except MediaFile.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        # built-in: fast EXISTS query via filter()
+        if not MediaAccess.objects.filter(user=request.user, media_file=media).exists():
+            return Response({"detail": "Forbidden."}, status=403)
+
+        # 2) stream from S3 via boto3
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            region_name=settings.AWS_S3_REGION_NAME,
+        )
+        obj = s3.get_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=media.file.name)
+        body = obj['Body']   # this is a streaming file‐like
+
+        # built-in: StreamingHttpResponse will iterate & chunk the body out
+        resp = StreamingHttpResponse(
+            streaming_content=body,
+            content_type=obj.get('ContentType', 'application/octet-stream'),
+        )
+        # built-in header for browser download
+        resp['Content-Disposition'] = f'attachment; filename="{media.file.name}"'
+        return resp
 
 class ParticipantsView(APIView):
     permission_classes = []  # or use [AllowAny] if you want open access
@@ -738,3 +773,31 @@ class MediaFileSignedURLView(APIView):
         resource_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{media_path}"
         signed_url = generate_cloudfront_signed_url(resource_url, expire_seconds=300)
         return Response({"signed_url": signed_url})
+
+class MediaDisplayView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, media_id):
+        try:
+            media = MediaFile.objects.get(pk=media_id)
+        except MediaFile.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        if not MediaAccess.objects.filter(user=request.user, media_file=media).exists():
+            return Response({"detail": "Forbidden."}, status=403)
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            region_name=settings.AWS_S3_REGION_NAME,
+        )
+        obj = s3.get_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=media.file.name)
+        body = obj['Body']
+
+        resp = StreamingHttpResponse(
+            streaming_content=body,
+            content_type=obj.get('ContentType', 'image/jpeg'),  # or use media.file.file.content_type if available
+        )
+        resp['Content-Disposition'] = f'inline; filename="{media.file.name}"'
+        return resp

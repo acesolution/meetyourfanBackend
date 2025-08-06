@@ -9,6 +9,7 @@ from decimal import Decimal
 import logging
 from api.models import Profile
 from profileapp.models import FollowRequest, Follower
+from .utils import generate_presigned_s3_url
 
 logger = logging.getLogger(__name__)
 
@@ -132,28 +133,32 @@ class TicketCampaignSerializer(serializers.ModelSerializer):
         
 class MediaFileSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
     has_access = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MediaFile
-        fields = ['file_url', 'uploaded_at', 'has_access']
-        
-    def get_file_url(self, obj):
-        request = self.context.get("request")
-        # Optionally, if you want to serve a placeholder when access is not granted,
-        # you can check has_access() here and return a locked URL.
-        if request and not self.get_has_access(obj):
-            # Return a locked placeholder URL. Adjust the URL as needed.
-            return request.build_absolute_uri(obj.file.url)
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        fields = ['id', 'preview_url', 'file_url', 'has_access']
 
-    def get_has_access(self, obj: MediaFile):
-        request = self.context.get("request")
-        if not request or not getattr(request, "user", None) or not request.user.is_authenticated:
+    def get_has_access(self, obj):
+        user = self.context.get('request').user
+        if not user or not user.is_authenticated:
             return False
-        return MediaAccess.objects.filter(user=request.user, media_file=obj).exists()
+        return MediaAccess.objects.filter(user=user, media_file=obj).exists()
+
+    def get_file_url(self, obj):
+        user = self.context.get('request').user
+        if user and user.is_authenticated and MediaAccess.objects.filter(user=user, media_file=obj).exists():
+            # Return the secure display endpoint
+            return self.context['request'].build_absolute_uri(f'/media-display/{obj.id}/')
+        return None
+
+    def get_preview_url(self, obj):
+        # Always return preview image URL for non-paid users
+        if obj.preview_image:
+            return obj.preview_image.url
+        # fallback to a signed URL for the original file (if no preview)
+        return generate_presigned_s3_url(obj.file.name)
 
 # Update MediaSellingCampaignSerializer similarly
 class MediaSellingCampaignSerializer(serializers.ModelSerializer):

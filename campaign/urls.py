@@ -16,7 +16,8 @@ from .views import (
     DashboardView,
     CampaignDashboardDetailView,
     FanAnalyticsView,
-    UserMediaAccessListView
+    UserMediaAccessListView,
+    MediaDisplayView,  # Add this import if not present
 )
 
 urlpatterns = [
@@ -36,5 +37,6 @@ urlpatterns = [
     path('dashboard/campaign/<int:campaign_id>/', CampaignDashboardDetailView.as_view(), name='campaign-dashboard-detail'),
     path('fan/analytics/', FanAnalyticsView.as_view(), name='fan-analytics'),
     path('view/<int:campaign_id>/media-access/', UserMediaAccessListView.as_view(), name='media-access'),
+    path('media-display/<int:media_id>/', MediaDisplayView.as_view(), name='media-display'),
 ]
 
