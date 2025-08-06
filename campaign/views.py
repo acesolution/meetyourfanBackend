@@ -321,11 +321,12 @@ class CreateCampaignView(APIView):
 
         # Save the campaign (so we get campaign.id)
         campaign = serializer.save(user=user)
+        logger.info(f"Campaign type ={campaign.campaign_type}")
 
         # If it’s a media_selling campaign, handle uploaded files as before:
         if campaign.campaign_type == "media_selling":
             files = request.FILES.getlist("media_files")
-            logger.debug(f"Media files ={files}")
+            logger.info(f"Media files ={files}")
             for f in files:
                 media_file = MediaFile(campaign=campaign, file=f)
                 media_file.save()
