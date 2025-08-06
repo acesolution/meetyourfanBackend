@@ -288,9 +288,8 @@ class CreateCampaignView(APIView):
         if campaign.campaign_type == 'media_selling':
             files = request.FILES.getlist('media_files')
             for file in files:
-                MediaFile.objects.create(campaign=campaign, file=file)
-            campaign.ticket_limit_per_fan = len(files)
-            campaign.save(update_fields=['ticket_limit_per_fan'])
+                media_file = MediaFile(campaign=campaign, file=file)
+                media_file.save()  # triggers signal after file is saved
             response_serializer = MediaSellingCampaignSerializer(campaign, context={'request': request})
         elif isinstance(campaign, TicketCampaign):
             response_serializer = TicketCampaignSerializer(campaign, context={'request': request})
