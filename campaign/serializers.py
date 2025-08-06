@@ -154,8 +154,9 @@ class MediaFileSerializer(serializers.ModelSerializer):
         return None
 
     def get_preview_url(self, obj):
-        return obj.preview_image.url
-    
+        if obj.preview_image and hasattr(obj.preview_image, 'url'):
+            return obj.preview_image.url
+        return None
     
 # Update MediaSellingCampaignSerializer similarly
 class MediaSellingCampaignSerializer(serializers.ModelSerializer):
