@@ -325,8 +325,10 @@ class CreateCampaignView(APIView):
             files = request.FILES.getlist("media_files")
             for file in files:
                 media_file = MediaFile(campaign=campaign, file=file)
-                media_file.save()  # triggers signal after file is saved
-            campaign.save()  # save again to update media_files field
+                media_file.save()
+                # Grant access to the influencer (campaign creator)
+                MediaAccess.objects.get_or_create(user=user, media_file=media_file)
+            campaign.save()
             response_serializer = MediaSellingCampaignSerializer(
                 campaign, context={"request": request}
             )
