@@ -254,35 +254,42 @@ AWS_S3_SIGNATURE_VERSION = "s3v4"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
-# settings.py
-
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',      # ← this is your “console”
-            'formatter': 'simple',
-        },
-        'file': {
-            'class': 'logging.FileHandler',
-            'filename': '/var/log/django/django.log',
-            'formatter': 'simple',
+    "version": 1,
+    "disable_existing_loggers": False,  # keep Django’s default loggers defined
+    "formatters": {
+        "simple": {
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
         },
     },
-    'formatters': {
-        'simple': {
-            'format': '[{asctime}] {levelname} {name}: {message}',
-            'style': '{',
+    "handlers": {
+        # ─── your console handler ───
+        "console": {
+            "class": "logging.StreamHandler",    # built-in: writes to stderr
+            "formatter": "simple",
+        },
+        # ─── optional file handler ───
+        "file": {
+            "class": "logging.FileHandler",      # built-in: writes to a file
+            "filename": "/var/log/django/django.log",
+            "formatter": "simple",
         },
     },
-    'root': {
-        'handlers': ['console', 'file'],
-        'level': 'DEBUG',
+    "root": {
+        # built-in root logger: will only show WARNING+ from all libraries
+        "level": "WARNING",
+        "handlers": ["file"],  # you can omit file if you don’t want a catch-all file
     },
-    'loggers': {
-        # you can add more specific loggers here if you like
+    "loggers": {
+        # ─── your application logger ───
+        "campaign": {
+            "level": "DEBUG",         # or INFO if you don’t need DEBUG messages
+            "handlers": ["console"],  # only send your logs to console
+            "propagate": False,       # don’t pass messages up to root
+        },
+        # If your code lives under meetyourfanBackend/, you could do:
+        # "meetyourfanBackend": { ... }
     },
 }
 
