@@ -144,28 +144,34 @@ def notify_winner_selection(sender, instance, created, **kwargs):
         )
 
 
-
 @receiver(post_save, sender=MediaFile)
 def create_blurred_preview(sender, instance, created, **kwargs):
     if not created:
         return
 
     try:
-        # Use instance.file.open() for remote storage
-        with instance.file.open('rb') as f:
+        with instance.file.open('rb') as f:      
             original = Image.open(f)
-            original.thumbnail((400, 400))  # small size
-            blurred = original.filter(ImageFilter.GaussianBlur(radius=12))
+            original.thumbnail((400, 400))         # built-in: create a thumbnail
+            blurred = original.filter(
+                ImageFilter.GaussianBlur(radius=12)  # built-in: blur filter
+            )
+
+            # convert RGBA→RGB so we can save as JPEG
+            if blurred.mode in ("RGBA", "LA"):
+                blurred = blurred.convert("RGB")  # built-in: drop alpha layer
 
             buffer = BytesIO()
             blurred.save(buffer, format="JPEG", quality=50)
             buffer.seek(0)
+
             instance.preview_image.save(
                 f"preview_{instance.file.name.split('/')[-1]}.jpg",
                 ContentFile(buffer.read()),
-                save=False
+                save=False                           # built-in: don’t auto-save here
             )
-            instance.save(update_fields=["preview_image"])
+            instance.save(update_fields=["preview_image"])  # built-in: save only the preview field
+
     except Exception as e:
-        # log but do not break upload
+        # now this should only fire on truly unexpected errors
         logger.exception("Failed to create blurred preview: %s", e)
