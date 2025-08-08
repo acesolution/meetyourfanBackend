@@ -314,7 +314,6 @@ from campaign.serializers import (
 )
 from celery import chain
 from blockchain.tasks import register_campaign_on_chain, save_onchain_action_info
-from blockchain.constants import OnChainAction
 import logging
 
 logger = logging.getLogger(__name__)
