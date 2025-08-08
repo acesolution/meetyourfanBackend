@@ -299,18 +299,37 @@ class CampaignDashboardDetailView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
-@parser_classes([MultiPartParser, FormParser]) 
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.decorators import parser_classes
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import transaction
+from campaign.models import MediaFile, MediaAccess
+from campaign.serializers import (
+    PolymorphicCampaignSerializer,
+    MediaSellingCampaignSerializer,
+    TicketCampaignSerializer,
+    MeetAndGreetCampaignSerializer,
+)
+from celery import chain
+from blockchain.tasks import register_campaign_on_chain, save_onchain_action_info
+from blockchain.constants import OnChainAction
+import logging
+
+logger = logging.getLogger(__name__)
+
 class CreateCampaignView(APIView):
+    # built-in: tells DRF to use these parsers for incoming data
+    parser_classes = (MultiPartParser, FormParser)
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
 
         if user.user_type != "influencer":
-            return Response(
-                {"error": "Only influencers can create campaigns."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"error": "Only influencers can create campaigns."},
+                            status=status.HTTP_403_FORBIDDEN)
 
         # 1) Validate & save to DB
         serializer = PolymorphicCampaignSerializer(
@@ -319,69 +338,85 @@ class CreateCampaignView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Save the campaign (so we get campaign.id)
-        campaign = serializer.save(user=user)
-        logger.info(f"Campaign type ={campaign.campaign_type}")
-
-        # If it’s a media_selling campaign, handle uploaded files as before:
-        if campaign.campaign_type == "media_selling":
-            files = request.FILES.getlist("media_files")
-            logger.info(f"Media files ={files}")
-            for f in files:
-                media_file = MediaFile(campaign=campaign, file=f)
-                media_file.save()
-                # Grant access to the influencer (campaign creator)
-                media_access, created = MediaAccess.objects.get_or_create(
-                    user=user,
-                    media_file=media_file
-                )  # get_or_create(): returns (obj, created_bool)
-                logger.debug(f"MediaAccess created={created} id={media_access.id}")
-                
-            response_serializer = MediaSellingCampaignSerializer(
-                campaign, context={"request": request}
-            )
-        elif isinstance(campaign, TicketCampaign):
-            response_serializer = TicketCampaignSerializer(
-                campaign, context={"request": request}
-            )
-        elif isinstance(campaign, MeetAndGreetCampaign):
-            response_serializer = MeetAndGreetCampaignSerializer(
-                campaign, context={"request": request}
-            )
-        else:
-            # If you add more types later, handle them here
-            return Response(
-                {"error": "Unknown campaign type."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ──────────────────────────────────────────────────────────────────────────────
-        # 2) Register on-chain: build & send a “createCampaign” (or “registerCampaign”) tx
-        # ──────────────────────────────────────────────────────────────────────────────
-
         try:
-            seller_id_int = int(request.user.user_id)
-        except (TypeError, ValueError):
+            with transaction.atomic():
+                # built-in: opens a DB transaction so on any exception the DB rolls back
+                campaign = serializer.save(user=user)
+                logger.info(f"Campaign type = {campaign.campaign_type}")
+
+                # Log raw FILES to debug why getlist() might be empty
+                logger.debug(f"request.FILES = {request.FILES!r}")
+
+                if campaign.campaign_type == "media_selling":
+                    # built-in: getlist() returns all uploaded files under this field name
+                    files = request.FILES.getlist("media_files")
+                    logger.info(f"Media files list = {files}")
+
+                    for f in files:
+                        # built-in: .save() on a Model instance writes it to the DB
+                        media_file = MediaFile(campaign=campaign, file=f)
+                        media_file.save()
+
+                        # built-in: get_or_create() tries to fetch an object matching the kwargs;
+                        # if none exists, it creates one and returns (obj, True), else (obj, False)
+                        media_access, created = MediaAccess.objects.get_or_create(
+                            user=user,
+                            media_file=media_file
+                        )
+                        logger.debug(f"MediaAccess created={created} id={media_access.id}")
+
+                    # nested serializer to include your newly saved media_files
+                    response_serializer = MediaSellingCampaignSerializer(
+                        campaign, context={"request": request}
+                    )
+
+                elif isinstance(campaign, TicketCampaign):
+                    response_serializer = TicketCampaignSerializer(
+                        campaign, context={"request": request}
+                    )
+                elif isinstance(campaign, MeetAndGreetCampaign):
+                    response_serializer = MeetAndGreetCampaignSerializer(
+                        campaign, context={"request": request}
+                    )
+                else:
+                    return Response({"error": "Unknown campaign type."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+
+                # ──────────────────────────────────────────────────────────────────────────────
+                # 2) Register on-chain
+                # ──────────────────────────────────────────────────────────────────────────────
+                try:
+                    seller_id_int = int(request.user.user_id)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"error": f"Invalid on-chain seller ID: {request.user.user_id!r}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+                # built-in: chain() chains multiple Celery tasks, passing the result of each to the next
+                # .s() makes an immutable signature; apply_async() schedules them right away
+                chain(
+                    register_campaign_on_chain.s(campaign.id, seller_id_int),
+                    save_onchain_action_info.s(
+                        request.user.id,
+                        campaign.id,
+                        OnChainAction.CAMPAIGN_REGISTERED,
+                        {}
+                    ),
+                ).apply_async()
+
+                return Response({
+                        "message": "Campaign created; on-chain registration queued.",
+                        "campaign": response_serializer.data,
+                    },
+                    status=status.HTTP_202_ACCEPTED,
+                )
+        except Exception as e:
+            logger.exception("Failed to create campaign")
             return Response(
-                {"error": f"Invalid on-chain seller ID: {request.user.user_id!r}"},
+                {"error": f"Failed to create campaign: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-        chain(
-            register_campaign_on_chain.s(campaign.id, seller_id_int),
-            save_onchain_action_info.s(
-                request.user.id, campaign.id, OnChainAction.CAMPAIGN_REGISTERED, {}
-            ),
-            # built‑in: .s() makes an “immutable signature” so the chain passes tx_hash into the next
-        ).apply_async()  # built‑in: schedule the whole chain immediately
-
-        return Response(
-            {
-                "message": "Campaign created; on-chain registration queued.",
-                "campaign": response_serializer.data,
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
-
 
 class WinnerSelectionView(APIView):
     permission_classes = [IsAuthenticated]

@@ -15,6 +15,23 @@ class Campaign(models.Model):
         ('media_selling', 'Media Selling'),
         ('meet_greet', 'Meet & Greet'),
     ]
+    
+    ONCHAIN_PENDING = 'pending'
+    ONCHAIN_SUCCESS = 'success'
+    ONCHAIN_FAILED = 'failed'
+    
+    ONCHAIN_STATUS_CHOICES = [
+        (ONCHAIN_PENDING, 'Pending'),
+        (ONCHAIN_SUCCESS, 'Success'),
+        (ONCHAIN_FAILED, 'Failed'),
+    ]
+    
+    onchain_status = models.CharField(
+        max_length=10,
+        choices=ONCHAIN_STATUS_CHOICES,
+        default=ONCHAIN_PENDING,
+        db_index=True,
+    )
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="base_campaigns"
@@ -42,8 +59,6 @@ class Campaign(models.Model):
         blank=True, 
         related_name="liked_campaigns"
     )
-    
-    
 
 
     def close_campaign(self):
