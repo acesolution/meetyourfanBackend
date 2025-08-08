@@ -344,7 +344,8 @@ class CreateCampaignView(APIView):
                 logger.info(f"Campaign type = {campaign.campaign_type}")
 
                 # Log raw FILES to debug why getlist() might be empty
-                logger.debug(f"request.FILES = {request.FILES!r}")
+                logger.info(f"request.FILES = {request.FILES!r}")
+                logger.error(f"request.FILES = {request.FILES!r}")
 
                 if campaign.campaign_type == "media_selling":
                     # built-in: getlist() returns all uploaded files under this field name
@@ -362,7 +363,7 @@ class CreateCampaignView(APIView):
                             user=user,
                             media_file=media_file
                         )
-                        logger.debug(f"MediaAccess created={created} id={media_access.id}")
+                        logger.info(f"MediaAccess created={created} id={media_access.id}")
 
                     # nested serializer to include your newly saved media_files
                     response_serializer = MediaSellingCampaignSerializer(
