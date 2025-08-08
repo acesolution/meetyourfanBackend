@@ -345,11 +345,11 @@ class CreateCampaignView(APIView):
 
                 # Log raw FILES to debug why getlist() might be empty
                 logger.info(f"request.FILES = {request.FILES!r}")
-                logger.error(f"request.FILES = {request.FILES!r}")
+                logger.info(f"Uploaded field names: {list(request.FILES.keys())}")
 
                 if campaign.campaign_type == "media_selling":
                     # built-in: getlist() returns all uploaded files under this field name
-                    files = request.FILES.getlist("media_files")
+                    files = request.FILES.getlist("media_file")
                     logger.info(f"Media files list = {files}")
 
                     for f in files:
