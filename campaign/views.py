@@ -349,7 +349,7 @@ class CreateCampaignView(APIView):
 
                 if campaign.campaign_type == "media_selling":
                     # built-in: getlist() returns all uploaded files under this field name
-                    files = request.FILES.getlist("media_file")
+                    files = request.FILES.getlist("media_files")
                     logger.info(f"Media files list = {files}")
 
                     for f in files:
