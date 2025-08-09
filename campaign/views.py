@@ -68,6 +68,8 @@ from django.http import StreamingHttpResponse
 import boto3
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.decorators import parser_classes
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.http import HttpResponseRedirect
 
 User = get_user_model()
 
@@ -977,33 +979,37 @@ class MediaFileSignedURLView(APIView):
 
 
 class MediaDisplayView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []       # no cookie auth
+    permission_classes = []           # rely on signed token instead
 
     def get(self, request, media_id):
+        token = request.GET.get("t")
+        if not token:
+            return Response({"detail": "Missing token"}, status=401)
+
+        signer = TimestampSigner()
         try:
-            media = MediaFile.objects.get(pk=media_id)
-        except MediaFile.DoesNotExist:
-            return Response({"detail": "Not found."}, status=404)
+            # built-in: unsign with max_age (seconds)
+            value = signer.unsign(token, max_age=300)  # token valid for 5 minutes
+            tok_media_id, tok_user_id = map(int, value.split(":"))
+        except (BadSignature, SignatureExpired, ValueError):
+            return Response({"detail": "Invalid/expired token"}, status=401)
 
-        if not MediaAccess.objects.filter(user=request.user, media_file=media).exists():
-            return Response({"detail": "Forbidden."}, status=403)
+        if tok_media_id != media_id:
+            return Response({"detail": "Token mismatch"}, status=401)
 
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_S3_REGION_NAME,
-        )
-        obj = s3.get_object(
-            Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=media.file.name
-        )
-        body = obj["Body"]
+        # Optional: double-check access is *still* valid
+        if not MediaAccess.objects.filter(user_id=tok_user_id, media_file_id=media_id).exists():
+            return Response({"detail": "Forbidden"}, status=403)
 
-        resp = StreamingHttpResponse(
-            streaming_content=body,
-            content_type=obj.get(
-                "ContentType", "image/jpeg"
-            ),  # or use media.file.file.content_type if available
+        # presign S3 and 302 so Next fetches bytes from S3
+        s3 = boto3.client("s3", aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                                region_name=settings.AWS_S3_REGION_NAME)
+        url = s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": settings.AWS_STORAGE_BUCKET_NAME,
+                    "Key": MediaFile.objects.only("file").get(pk=media_id).file.name},
+            ExpiresIn=300,
         )
-        resp["Content-Disposition"] = f'inline; filename="{media.file.name}"'
-        return resp
+        return HttpResponseRedirect(url)  # built-in: 302 redirect  

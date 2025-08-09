@@ -10,6 +10,10 @@ import logging
 from api.models import Profile
 from profileapp.models import FollowRequest, Follower
 from .utils import generate_presigned_s3_url
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from django.urls import reverse
+
+signer = TimestampSigner()  # built-in: adds timestamp so we can enforce expiry
 
 logger = logging.getLogger(__name__)
 
@@ -147,11 +151,15 @@ class MediaFileSerializer(serializers.ModelSerializer):
         return MediaAccess.objects.filter(user=user, media_file=obj).exists()
 
     def get_file_url(self, obj):
-        user = self.context.get('request').user
-        if user and user.is_authenticated and MediaAccess.objects.filter(user=user, media_file=obj).exists():
-            # Return the secure display endpoint
-            return self.context['request'].build_absolute_uri(f'/campaign/media-display/{obj.id}/')
-        return None
+        request = self.context["request"]
+        user = request.user
+        if not (user.is_authenticated and
+                MediaAccess.objects.filter(user=user, media_file=obj).exists()):
+            return None
+
+        token = signer.sign(f"{obj.id}:{user.id}")  # built-in: produces signed string
+        path = reverse("campaign:media-display", kwargs={"media_id": obj.id})
+        return request.build_absolute_uri(f"{path}?t={token}")
 
     def get_preview_url(self, obj):
         if obj.preview_image and hasattr(obj.preview_image, 'url'):
