@@ -150,7 +150,7 @@ class MediaFileSerializer(serializers.ModelSerializer):
         user = self.context.get('request').user
         if user and user.is_authenticated and MediaAccess.objects.filter(user=user, media_file=obj).exists():
             # Return the secure display endpoint
-            return self.context['request'].build_absolute_uri(f'/media-display/{obj.id}/')
+            return self.context['request'].build_absolute_uri(f'/campaign/media-display/{obj.id}/')
         return None
 
     def get_preview_url(self, obj):

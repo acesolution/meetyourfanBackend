@@ -20,6 +20,8 @@ from .views import (
     MediaDisplayView,  # Add this import if not present
 )
 
+app_name = "campaign"
+
 urlpatterns = [
     path('create/campaign/', CreateCampaignView.as_view(), name='create-campaign'),
     path('select-winners/<int:campaign_id>/', WinnerSelectionView.as_view(), name='select-winners'),
