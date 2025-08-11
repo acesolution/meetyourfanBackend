@@ -675,7 +675,7 @@ class MediaDownloadView(APIView):
             content_type=obj.get("ContentType", "application/octet-stream"),
         )
         # built-in header for browser download
-        resp["Content-Disposition"] = f'attachment; filename="{media.file.name}"'
+        resp["Content-Disposition"] = f'inline; filename="{media.file.name}"'
         return resp
 
 
