@@ -70,7 +70,7 @@ from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.http import HttpResponseRedirect
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
-from datetime import  timedelta, timezone
+from datetime import timedelta, timezone
 import datetime as dt
 from django.http import HttpResponseRedirect
 from botocore.signers import CloudFrontSigner
@@ -317,8 +317,10 @@ class CreateCampaignView(APIView):
         user = request.user
 
         if user.user_type != "influencer":
-            return Response({"error": "Only influencers can create campaigns."},
-                            status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"error": "Only influencers can create campaigns."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # 1) Validate & save to DB
         serializer = PolymorphicCampaignSerializer(
@@ -350,10 +352,11 @@ class CreateCampaignView(APIView):
                         # built-in: get_or_create() tries to fetch an object matching the kwargs;
                         # if none exists, it creates one and returns (obj, True), else (obj, False)
                         media_access, created = MediaAccess.objects.get_or_create(
-                            user=user,
-                            media_file=media_file
+                            user=user, media_file=media_file
                         )
-                        logger.info(f"MediaAccess created={created} id={media_access.id}")
+                        logger.info(
+                            f"MediaAccess created={created} id={media_access.id}"
+                        )
 
                     # nested serializer to include your newly saved media_files
                     response_serializer = MediaSellingCampaignSerializer(
@@ -369,8 +372,10 @@ class CreateCampaignView(APIView):
                         campaign, context={"request": request}
                     )
                 else:
-                    return Response({"error": "Unknown campaign type."},
-                                    status=status.HTTP_400_BAD_REQUEST)
+                    return Response(
+                        {"error": "Unknown campaign type."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
                 # ──────────────────────────────────────────────────────────────────────────────
                 # 2) Register on-chain
@@ -379,7 +384,9 @@ class CreateCampaignView(APIView):
                     seller_id_int = int(request.user.user_id)
                 except (TypeError, ValueError):
                     return Response(
-                        {"error": f"Invalid on-chain seller ID: {request.user.user_id!r}"},
+                        {
+                            "error": f"Invalid on-chain seller ID: {request.user.user_id!r}"
+                        },
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     )
 
@@ -391,11 +398,12 @@ class CreateCampaignView(APIView):
                         request.user.id,
                         campaign.id,
                         OnChainAction.CAMPAIGN_REGISTERED,
-                        {}
+                        {},
                     ),
                 ).apply_async()
 
-                return Response({
+                return Response(
+                    {
                         "message": "Campaign created; on-chain registration queued.",
                         "campaign": response_serializer.data,
                     },
@@ -407,6 +415,7 @@ class CreateCampaignView(APIView):
                 {"error": f"Failed to create campaign: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
 
 class WinnerSelectionView(APIView):
     permission_classes = [IsAuthenticated]
@@ -968,33 +977,55 @@ class MediaFileSignedURLView(APIView):
 
 def _rsa_signer_loader(pem_str: str):
     key = load_pem_private_key(pem_str.encode("utf-8"), password=None)
+
     def _signer(message: bytes) -> bytes:
         return key.sign(message, padding.PKCS1v15(), hashes.SHA1())
+
     return _signer
 
 
+from django.core.signing import TimestampSigner
+
+
+def signed_media_token(media_id: int, user_id: int) -> str:
+    payload = f"{media_id}:{user_id}"
+    return TimestampSigner(salt="media-access").sign(payload)
+
 
 class MediaDisplayView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]  # << was IsAuthenticated
 
     def get(self, request, media_id):
+        user = request.user if request.user.is_authenticated else None
+
+        # try bearer user first; otherwise fall back to signed token
+        if not user:
+            token = request.query_params.get("t")
+            if not token:
+                return Response({"detail": "Unauthorized."}, status=401)
+
+            try:
+                # use a fixed salt you also use when GENERATING the token
+                raw = TimestampSigner(salt="media-access").unsign(token, max_age=300)
+                mid, uid = raw.split(":", 1)  # "<media_id>:<user_id>"
+                if str(media_id) != mid:
+                    return Response({"detail": "Invalid token media id."}, status=403)
+                user = User.objects.get(pk=uid)
+            except (BadSignature, SignatureExpired, ValueError, User.DoesNotExist):
+                return Response({"detail": "Unauthorized."}, status=401)
+
         media = get_object_or_404(MediaFile, pk=media_id)
 
-        # your access check
-        if not MediaAccess.objects.filter(user=request.user, media_file=media).exists():
+        if not MediaAccess.objects.filter(user=user, media_file=media).exists():
             return Response({"detail": "Forbidden."}, status=403)
 
-        # build unsigned CloudFront URL for this object key
         object_key = media.file.name.lstrip("/")
         base_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{object_key}"
 
-        # sign it (short TTL)
-        expire = dt.datetime.now(timezone.utc) + timedelta(minutes=1)
+        expire = dt.datetime.now(dt.timezone.utc) + timedelta(minutes=1)
         signer = CloudFrontSigner(
-            settings.CLOUDFRONT_KEY_PAIR_ID,                  # e.g. "K1WIAYK5Y5S7Y7"
-            _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY)
+            settings.CLOUDFRONT_KEY_PAIR_ID,
+            _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY),
         )
         signed_url = signer.generate_presigned_url(base_url, date_less_than=expire)
-
-        # redirect the client (fast)
         return HttpResponseRedirect(signed_url)
