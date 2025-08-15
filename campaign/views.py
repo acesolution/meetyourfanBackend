@@ -36,7 +36,6 @@ from .models import (
 )
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.utils import timezone
 from django.db.models import Sum, Count, Q
 from decimal import Decimal
 from django.conf import settings
@@ -122,7 +121,7 @@ class DashboardView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        now_time = timezone.now()
+        now_time = dj_timezone.now()
 
         # Active campaigns: campaigns that are not closed and whose deadline is in the future.
         active_campaigns_qs = Campaign.objects.filter(
@@ -429,7 +428,7 @@ class WinnerSelectionView(APIView):
         # Close campaign if open
         if not campaign.is_closed:
             campaign.is_closed = True
-            campaign.closed_at = timezone.now()
+            campaign.closed_at = dj_timezone.now()
             campaign.save(update_fields=["is_closed", "closed_at"])
 
         # Compute sold vs goal
@@ -749,7 +748,7 @@ class ExploreCampaignsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        now = timezone.now()
+        now = dj_timezone.now()
         # Filter campaigns where the deadline is still in the future and the campaign is not closed.
         # Order them by creation date in descending order (newest first),
         # and then slice the QuerySet to get only the first 10 campaigns.
