@@ -35,7 +35,6 @@ from .models import (
     MediaAccess,
 )
 from django.core.mail import send_mail
-from django.utils.timezone import now
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
@@ -72,10 +71,13 @@ from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.http import HttpResponseRedirect
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
-from datetime import datetime, timedelta, timezone
+from datetime import  timedelta, timezone
+import datetime as dt
 from django.http import HttpResponseRedirect
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from django.utils import timezone as dj_timezone
+
 User = get_user_model()
 
 logger = logging.getLogger(__name__)
@@ -306,24 +308,6 @@ class CampaignDashboardDetailView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
-from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.decorators import parser_classes
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.db import transaction
-from campaign.models import MediaFile, MediaAccess
-from campaign.serializers import (
-    PolymorphicCampaignSerializer,
-    MediaSellingCampaignSerializer,
-    TicketCampaignSerializer,
-    MeetAndGreetCampaignSerializer,
-)
-from celery import chain
-from blockchain.tasks import register_campaign_on_chain, save_onchain_action_info
-import logging
-
-logger = logging.getLogger(__name__)
 
 class CreateCampaignView(APIView):
     # built-in: tells DRF to use these parsers for incoming data
@@ -1006,7 +990,7 @@ class MediaDisplayView(APIView):
         base_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{object_key}"
 
         # sign it (short TTL)
-        expire = datetime.now(timezone.utc) + timedelta(minutes=1)
+        expire = dt.datetime.now(timezone.utc) + timedelta(minutes=1)
         signer = CloudFrontSigner(
             settings.CLOUDFRONT_KEY_PAIR_ID,                  # e.g. "K1WIAYK5Y5S7Y7"
             _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY)
