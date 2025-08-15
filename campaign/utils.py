@@ -4,10 +4,14 @@ from django.conf import settings
 from django.db import transaction
 import numpy as np
 from django.db.models import Sum, Count, Q
-
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from django.db.utils import IntegrityError
 import random
 import boto3
+from io import BytesIO
+from pathlib import Path
+from django.core.files.base import ContentFile
+
 
 def select_random_winners(campaign_id):
     from campaign.models import Campaign, Participation, CampaignWinner
@@ -138,3 +142,44 @@ def generate_presigned_s3_url(key: str, expires_in: int = 3600):
         Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': key},
         ExpiresIn=expires_in,
     )
+    
+    
+def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.25):
+    """
+    Returns a new ContentFile (JPEG) with a tiled semi-transparent text watermark.
+    """
+    im = Image.open(uploaded_file)
+    im = ImageOps.exif_transpose(im)  # respect camera EXIF orientation
+    im = im.convert("RGBA")
+
+    # pick a font size ~5% of min dimension
+    base = min(im.size)
+    size = max(16, int(base * 0.05))
+    try:
+        font = ImageFont.truetype("arial.ttf", size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    # build watermark layer
+    layer = Image.new("RGBA", im.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(layer)
+
+    # text size
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+    # tile diagonally
+    step = int(tw * 1.8)
+    alpha = int(255 * opacity)
+    for y in range(-th, im.height + th, step):
+        for x in range(-tw, im.width + tw, step):
+            draw.text((x, y), text, font=font, fill=(255, 255, 255, alpha))
+
+    out = Image.alpha_composite(im, layer).convert("RGB")
+
+    buf = BytesIO()
+    out.save(buf, format="JPEG", quality=90, optimize=True)
+    buf.seek(0)
+    name = Path(getattr(uploaded_file, "name", "upload")).stem + "_wm.jpg"
+    return ContentFile(buf.read(), name=name)

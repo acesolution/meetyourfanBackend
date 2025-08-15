@@ -11,6 +11,9 @@ from blockchain.tasks import (
 )
 from campaign.utils import select_random_winners
 from django.db.models import Sum
+import boto3
+from campaign.models import MediaFile
+import subprocess, tempfile, os, uuid
 
 OWNER = settings.OWNER_ADDRESS
 
@@ -58,3 +61,40 @@ def close_expired_campaigns():
             select_random_winners(c.id)
             c.winners_selected = True
             c.save(update_fields=['winners_selected'])
+
+
+@shared_task
+def watermark_video(media_file_id: int, watermark_s3_key: str = None):
+    mf = MediaFile.objects.get(pk=media_file_id)
+    bucket = settings.AWS_STORAGE_BUCKET_NAME
+    s3 = boto3.client("s3",
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_S3_REGION_NAME,
+    )
+
+    # temp files
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "in.mp4")
+        dst = os.path.join(tmp, "out.mp4")
+        wm  = os.path.join(tmp, "wm.png")
+
+        # download input
+        s3.download_file(bucket, mf.file.name, src)
+
+        # watermark image (optional) – if you keep one in S3 like "brand/watermark.png"
+        if watermark_s3_key:
+            s3.download_file(bucket, watermark_s3_key, wm)
+            filtergraph = f"movie={wm}[wm];[in][wm]overlay=W-w-20:H-h-20[out]"
+            cmd = ["ffmpeg", "-y", "-i", src, "-filter_complex", filtergraph, "-c:v", "h264", "-c:a", "copy", dst]
+        else:
+            # text watermark example
+            # requires ffmpeg built with libfreetype; adjust fontfile
+            draw = "drawtext=text='meetyourfan.io':fontcolor=white@0.25:fontsize=24:x=W-tw-20:y=H-th-20"
+            cmd = ["ffmpeg", "-y", "-i", src, "-vf", draw, "-c:v", "h264", "-c:a", "copy", dst]
+
+        subprocess.check_call(cmd)
+
+        # upload back (replace or write a new key)
+        new_key = mf.file.name  # overwrite
+        s3.upload_file(dst, bucket, new_key, ExtraArgs={"ContentType": "video/mp4"})

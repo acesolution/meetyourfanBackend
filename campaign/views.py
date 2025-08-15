@@ -48,6 +48,7 @@ from campaign.utils import (
     get_or_create_winner_conversation,
     assign_media_to_user,
     generate_presigned_s3_url,
+    watermark_image,
 )
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
 from django.db import transaction
@@ -347,8 +348,14 @@ class CreateCampaignView(APIView):
                     logger.info(f"Media files list = {files}")
 
                     for f in files:
+                        
+                        processed = f
+                        if f.content_type and f.content_type.startswith("image/"):
+                            # put your brand or campaign title here
+                            wtext = "meetyourfan.io"
+                            processed = watermark_image(f, text=wtext, opacity=0.25)
                         # built-in: .save() on a Model instance writes it to the DB
-                        media_file = MediaFile(campaign=campaign, file=f)
+                        media_file = MediaFile(campaign=campaign, file=processed)
                         media_file.save()
 
                         # built-in: get_or_create() tries to fetch an object matching the kwargs;
