@@ -70,7 +70,12 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.decorators import parser_classes
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.http import HttpResponseRedirect
-
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+from datetime import datetime, timedelta, timezone
+from django.http import HttpResponseRedirect
+from botocore.signers import CloudFrontSigner
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 User = get_user_model()
 
 logger = logging.getLogger(__name__)
@@ -978,38 +983,35 @@ class MediaFileSignedURLView(APIView):
         return Response({"signed_url": signed_url})
 
 
+def _rsa_signer_loader(pem_str: str):
+    key = load_pem_private_key(pem_str.encode("utf-8"), password=None)
+    def _signer(message: bytes) -> bytes:
+        return key.sign(message, padding.PKCS1v15(), hashes.SHA1())
+    return _signer
+
+
+
 class MediaDisplayView(APIView):
-    authentication_classes = []       # no cookie auth
-    permission_classes = []           # rely on signed token instead
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, media_id):
-        token = request.GET.get("t")
-        if not token:
-            return Response({"detail": "Missing token"}, status=401)
+        media = get_object_or_404(MediaFile, pk=media_id)
 
-        signer = TimestampSigner()
-        try:
-            # built-in: unsign with max_age (seconds)
-            value = signer.unsign(token, max_age=300)  # token valid for 5 minutes
-            tok_media_id, tok_user_id = map(int, value.split(":"))
-        except (BadSignature, SignatureExpired, ValueError):
-            return Response({"detail": "Invalid/expired token"}, status=401)
+        # your access check
+        if not MediaAccess.objects.filter(user=request.user, media_file=media).exists():
+            return Response({"detail": "Forbidden."}, status=403)
 
-        if tok_media_id != media_id:
-            return Response({"detail": "Token mismatch"}, status=401)
+        # build unsigned CloudFront URL for this object key
+        object_key = media.file.name.lstrip("/")
+        base_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{object_key}"
 
-        # Optional: double-check access is *still* valid
-        if not MediaAccess.objects.filter(user_id=tok_user_id, media_file_id=media_id).exists():
-            return Response({"detail": "Forbidden"}, status=403)
-
-        # presign S3 and 302 so Next fetches bytes from S3
-        s3 = boto3.client("s3", aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                                region_name=settings.AWS_S3_REGION_NAME)
-        url = s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": settings.AWS_STORAGE_BUCKET_NAME,
-                    "Key": MediaFile.objects.only("file").get(pk=media_id).file.name},
-            ExpiresIn=300,
+        # sign it (short TTL)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=1)
+        signer = CloudFrontSigner(
+            settings.CLOUDFRONT_KEY_PAIR_ID,                  # e.g. "K1WIAYK5Y5S7Y7"
+            _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY)
         )
-        return HttpResponseRedirect(url)  # built-in: 302 redirect  
+        signed_url = signer.generate_presigned_url(base_url, date_less_than=expire)
+
+        # redirect the client (fast)
+        return HttpResponseRedirect(signed_url)
