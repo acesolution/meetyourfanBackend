@@ -12,8 +12,9 @@ from profileapp.models import FollowRequest, Follower
 from .utils import generate_presigned_s3_url
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.urls import reverse
+from django.conf import settings
 
-signer = TimestampSigner()  # built-in: adds timestamp so we can enforce expiry
+signer = TimestampSigner(salt=getattr(settings, "MEDIA_TOKEN_SALT", "media-access"))
 
 logger = logging.getLogger(__name__)
 

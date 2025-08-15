@@ -81,6 +81,8 @@ User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
+SALT = getattr(settings, "MEDIA_TOKEN_SALT", "media-access")
+TTL  = getattr(settings, "MEDIA_TOKEN_TTL", 300)
 
 def wait_for_tx_receipt(
     tx_hash: str, poll_interval: float = 2.0, timeout: float = 120.0
@@ -1006,7 +1008,7 @@ class MediaDisplayView(APIView):
 
             try:
                 # use a fixed salt you also use when GENERATING the token
-                raw = TimestampSigner(salt="media-access").unsign(token, max_age=300)
+                raw = TimestampSigner(salt=SALT).unsign(token, max_age=TTL)
                 mid, uid = raw.split(":", 1)  # "<media_id>:<user_id>"
                 if str(media_id) != mid:
                     return Response({"detail": "Invalid token media id."}, status=403)
