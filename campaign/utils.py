@@ -144,26 +144,28 @@ def generate_presigned_s3_url(key: str, expires_in: int = 3600):
     )
     
     
-def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.25):
-    """Place a single semi-transparent text watermark on the image.
+
+def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.15):
+    """Place a single semi-transparent purple text watermark on the image.
 
     The watermark is rendered once in the bottom-right corner to avoid
     obscuring the underlying image content.
     """
     im = Image.open(uploaded_file)
+    fmt = im.format  # preserve original format before conversion
     im = ImageOps.exif_transpose(im)  # respect camera EXIF orientation
     im = im.convert("RGBA")
 
-    # pick a font size ~5% of min dimension
+    # pick a font size ~10% of min dimension
     base = min(im.size)
-    size = max(16, int(base * 0.05))
+    size = max(16, int(base * 0.10))
     try:
         font = ImageFont.truetype("arial.ttf", size)
     except Exception:
         font = ImageFont.load_default()
 
     # build watermark layer
-    layer = Image.new("RGBA", im.size, (255, 255, 255, 0))
+    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
     # text size
@@ -176,12 +178,15 @@ def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.25):
     margin = max(5, int(size * 0.5))
     x = im.width - tw - margin
     y = im.height - th - margin
-    draw.text((x, y), text, font=font, fill=(255, 255, 255, alpha))
+
+    draw.text((x, y), text, font=font, fill=(128, 0, 128, alpha))
 
     out = Image.alpha_composite(im, layer)
 
     buf = BytesIO()
-    fmt = im.format if im.format in ["JPEG", "PNG"] else "JPEG"
+
+    fmt = fmt if fmt in ["JPEG", "PNG"] else "JPEG"
+
     if fmt != "PNG":
         out = out.convert("RGB")
         out.save(buf, format=fmt, quality=90, optimize=True)
