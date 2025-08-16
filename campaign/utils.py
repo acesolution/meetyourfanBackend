@@ -145,8 +145,10 @@ def generate_presigned_s3_url(key: str, expires_in: int = 3600):
     
     
 def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.25):
-    """
-    Returns a new ContentFile (JPEG) with a tiled semi-transparent text watermark.
+    """Place a single semi-transparent text watermark on the image.
+
+    The watermark is rendered once in the bottom-right corner to avoid
+    obscuring the underlying image content.
     """
     im = Image.open(uploaded_file)
     im = ImageOps.exif_transpose(im)  # respect camera EXIF orientation
@@ -168,18 +170,24 @@ def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.25):
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
-
-    # tile diagonally
-    step = int(tw * 1.8)
     alpha = int(255 * opacity)
-    for y in range(-th, im.height + th, step):
-        for x in range(-tw, im.width + tw, step):
-            draw.text((x, y), text, font=font, fill=(255, 255, 255, alpha))
 
-    out = Image.alpha_composite(im, layer).convert("RGB")
+    # position watermark in bottom-right with a small margin
+    margin = max(5, int(size * 0.5))
+    x = im.width - tw - margin
+    y = im.height - th - margin
+    draw.text((x, y), text, font=font, fill=(255, 255, 255, alpha))
+
+    out = Image.alpha_composite(im, layer)
 
     buf = BytesIO()
-    out.save(buf, format="JPEG", quality=90, optimize=True)
+    fmt = im.format if im.format in ["JPEG", "PNG"] else "JPEG"
+    if fmt != "PNG":
+        out = out.convert("RGB")
+        out.save(buf, format=fmt, quality=90, optimize=True)
+    else:
+        out.save(buf, format=fmt)
     buf.seek(0)
-    name = Path(getattr(uploaded_file, "name", "upload")).stem + "_wm.jpg"
+    ext = "jpg" if fmt == "JPEG" else "png"
+    name = Path(getattr(uploaded_file, "name", "upload")).stem + f"_wm.{ext}"
     return ContentFile(buf.read(), name=name)
