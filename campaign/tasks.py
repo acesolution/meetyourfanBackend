@@ -86,15 +86,57 @@ def watermark_video(media_file_id: int, watermark_s3_key: str = None):
         if watermark_s3_key:
             s3.download_file(bucket, watermark_s3_key, wm)
             filtergraph = f"movie={wm}[wm];[in][wm]overlay=W-w-20:H-h-20[out]"
-            cmd = ["ffmpeg", "-y", "-i", src, "-filter_complex", filtergraph, "-c:v", "h264", "-c:a", "copy", dst]
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                src,
+                "-filter_complex",
+                filtergraph,
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-preset",
+                "medium",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "copy",
+                dst,
+            ]
         else:
             # text watermark example
             # requires ffmpeg built with libfreetype; adjust fontfile
-            draw = "drawtext=text='meetyourfan.io':fontcolor=white@0.25:fontsize=24:x=W-tw-20:y=H-th-20"
-            cmd = ["ffmpeg", "-y", "-i", src, "-vf", draw, "-c:v", "h264", "-c:a", "copy", dst]
+            draw = (
+                "drawtext=text='meetyourfan.io':"
+                "fontcolor=0x800080@0.15:fontsize=h*0.1:"
+                "x=W-tw-20:y=H-th-20"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                src,
+                "-vf",
+                draw,
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-preset",
+                "medium",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "copy",
+                dst,
+            ]
 
         subprocess.check_call(cmd)
 
         # upload back (replace or write a new key)
         new_key = mf.file.name  # overwrite
-        s3.upload_file(dst, bucket, new_key, ExtraArgs={"ContentType": "video/mp4"})
+        s3.upload_file(
+            dst, bucket, new_key, ExtraArgs={"ContentType": "video/mp4"}
+        )
