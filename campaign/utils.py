@@ -144,6 +144,7 @@ def generate_presigned_s3_url(key: str, expires_in: int = 3600):
     )
     
     
+
 def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.15):
     """Place a single semi-transparent purple text watermark on the image.
 
@@ -177,12 +178,15 @@ def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.15):
     margin = max(5, int(size * 0.5))
     x = im.width - tw - margin
     y = im.height - th - margin
+
     draw.text((x, y), text, font=font, fill=(128, 0, 128, alpha))
 
     out = Image.alpha_composite(im, layer)
 
     buf = BytesIO()
+
     fmt = fmt if fmt in ["JPEG", "PNG"] else "JPEG"
+
     if fmt != "PNG":
         out = out.convert("RGB")
         out.save(buf, format=fmt, quality=90, optimize=True)
