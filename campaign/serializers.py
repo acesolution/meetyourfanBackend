@@ -143,7 +143,7 @@ class MediaFileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MediaFile
-        fields = ['id', 'preview_url', 'file_url', 'has_access']
+        fields = ['id', 'preview_url', 'file_url', 'has_access', "content_type"]
 
     def get_has_access(self, obj):
         user = self.context.get('request').user

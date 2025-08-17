@@ -173,6 +173,7 @@ class MediaFile(models.Model):
     file = models.FileField(upload_to='media/private/campaign_media/paid/')
     preview_image = models.ImageField(upload_to='media/private/campaign_media/previews/', blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+    content_type = models.CharField(max_length=100, blank=True) 
     
     def get_preview_url(self):
         if self.preview_image and hasattr(self.preview_image, 'url'):
@@ -181,6 +182,12 @@ class MediaFile(models.Model):
     
     def __str__(self):
         return f"Media for {self.campaign.title}"
+    
+    def save(self, *args, **kwargs):
+        # built-in: getattr returns attribute or default; request upload has content_type on the file obj.
+        if hasattr(self.file, "file") and hasattr(self.file.file, "content_type") and not self.content_type:
+            self.content_type = self.file.file.content_type or ""
+        super().save(*args, **kwargs)  # built-in: super() calls parent class method
 
     
 class CreditSpend(models.Model):
