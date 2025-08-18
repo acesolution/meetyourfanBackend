@@ -1009,13 +1009,13 @@ class GuestCampaignPurchaseView(APIView):
             user = serializer.save()
 
             # 4) Fire off the smart-contract registration in the background
-            try:
-                tx_hash = register_user_on_chain.delay(user.user_id)
-            except Exception as e:
-                return Response(
-                    {"error": "Blockchain registration failed", "details": str(e)},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+            # try:
+            #     tx_hash = register_user_on_chain.delay(user.user_id)
+            # except Exception as e:
+            #     return Response(
+            #         {"error": "Blockchain registration failed", "details": str(e)},
+            #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            #     )
             # 5) Generate & send email verification code
             verification, _ = VerificationCode.objects.get_or_create(user=user)
             code = verification.generate_code()

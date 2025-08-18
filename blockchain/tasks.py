@@ -23,46 +23,6 @@ GAS_LIMIT      = 200_000
 GAS_PRICE_GWEI = "50"
 BATCH_SIZE = 50
 
-# built-ins used below:
-# - isinstance(): checks an object's type
-# - abs(): returns absolute value (used to check magnitude against BIGINT)
-# - hex(): converts an int/bytes to a hexadecimal string ("0x...")
-# - set comprehension {x for x in ...}: builds a set efficiently
-# - dict comprehension {k: v for k, v in ...}: builds a dict efficiently
-
-PG_BIGINT_MAX = 2**63 - 1  # built-in ** is exponentiation; max signed BIGINT
-
-def _coerce_for_pg(value):
-    """
-    Convert values that don't fit in BIGINT (e.g., 256-bit ints like logsBloom)
-    into safe representations before hitting Postgres.
-    - Large ints -> hex string "0x..."
-    - Bytes/HexBytes -> hex string "0x..."
-    Everything else is returned unchanged.
-    """
-    # isinstance() is a built-in for type checking
-    if isinstance(value, int):
-        # abs() is built-in: protects against negative edge-cases
-        if abs(value) > PG_BIGINT_MAX:
-            # hex() is built-in: human-readable & round-trippable
-            return hex(value)
-        return value
-    if isinstance(value, (bytes, bytearray)):
-        return "0x" + value.hex()  # .hex() is a bytes method that returns hex
-    return value
-
-def _sanitize_details_for_model(details: dict, model_cls) -> dict:
-    """
-    Keep only fields that actually exist on the model, and coerce each value
-    to something Postgres can store.
-    """
-    # Django’s _meta API introspects fields; we build a set() of valid names
-    model_field_names = {f.name for f in model_cls._meta.get_fields()}
-    # dict comprehension: filter + coerce in one pass
-    safe = {k: _coerce_for_pg(v) for k, v in details.items() if k in model_field_names}
-    return safe
-
-
 def _build_and_send(fn, tx_params):
     tx     = fn.build_transaction(tx_params)
     signed = w3.eth.account.sign_transaction(tx, private_key=PK)
@@ -114,7 +74,6 @@ def save_transaction_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
-    safe_details = _sanitize_details_for_model(details, Transaction)
 
     # Django ORM .objects.create(): INSERT a new row with the given fields
     Transaction.objects.create(
@@ -122,7 +81,7 @@ def save_transaction_info(
         campaign_id=campaign_id,
         status=Transaction.COMPLETED,  # mark completed once details fetched
         tx_hash=tx_hash,
-        **safe_details,                     # unpack block_number, gas_used, etc.
+        **details,                     # unpack block_number, gas_used, etc.
         tx_type=tx_type,
         tt_amount=tt_amount,
         credits_delta=credits_delta,
@@ -151,14 +110,13 @@ def save_influencer_transaction_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
-    safe_details = _sanitize_details_for_model(details, InfluencerTransaction)
 
     InfluencerTransaction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
         status=InfluencerTransaction.COMPLETED,
         tx_hash=tx_hash,
-        **safe_details,
+        **details,
         influencer_id=influencer_id,
         transaction_type=transaction_type,
         tt_amount=tt_amount,
@@ -185,9 +143,6 @@ def save_onchain_action_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
-    
-    # sanitize & align keys to the model to avoid overflow / unknown columns
-    safe_details = _sanitize_details_for_model(details, OnChainAction)
 
     OnChainAction.objects.create(
         user_id=user_id,
@@ -197,7 +152,6 @@ def save_onchain_action_info(
         **details,
         tx_type=event_type,
         args=args or {},
-        **safe_details,
     )
     
         
