@@ -23,6 +23,40 @@ GAS_LIMIT      = 200_000
 GAS_PRICE_GWEI = "50"
 BATCH_SIZE = 50
 
+
+# built-ins used:
+# - ** (exponent) to compute 2**63 - 1 (max signed BIGINT)
+# - isinstance() to check types
+# - abs() to check magnitude regardless of sign
+# - hex() to convert large integers / bytes to "0x..." strings
+# - set/dict comprehensions to build containers efficiently
+
+PG_BIGINT_MAX = 2**63 - 1
+
+def _coerce_for_pg(value):
+    """
+    Ensure the value will fit Postgres types used by your models.
+    - Ints larger than BIGINT → hex string (lossless).
+    - bytes/bytearray → hex string.
+    - Anything else → returned unchanged.
+    """
+    if isinstance(value, int):
+        if abs(value) > PG_BIGINT_MAX:
+            return hex(value)  # built-in hex(): int -> "0x..."
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return "0x" + value.hex()  # .hex() is a bytes method
+    return value
+
+def _sanitize_details_for_model(details: dict, model_cls) -> dict:
+    """
+    Keep only fields that exist on the model and coerce each value
+    so Postgres won’t error on insert.
+    """
+    model_field_names = {f.name for f in model_cls._meta.get_fields()}  # set comprehension
+    return {k: _coerce_for_pg(v) for k, v in details.items() if k in model_field_names}  # dict comp
+
+
 def _build_and_send(fn, tx_params):
     tx     = fn.build_transaction(tx_params)
     signed = w3.eth.account.sign_transaction(tx, private_key=PK)
@@ -74,6 +108,7 @@ def save_transaction_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
+    safe_details = _sanitize_details_for_model(details, Transaction)
 
     # Django ORM .objects.create(): INSERT a new row with the given fields
     Transaction.objects.create(
@@ -81,7 +116,7 @@ def save_transaction_info(
         campaign_id=campaign_id,
         status=Transaction.COMPLETED,  # mark completed once details fetched
         tx_hash=tx_hash,
-        **details,                     # unpack block_number, gas_used, etc.
+        **safe_details,                     # unpack block_number, gas_used, etc.
         tx_type=tx_type,
         tt_amount=tt_amount,
         credits_delta=credits_delta,
@@ -110,13 +145,13 @@ def save_influencer_transaction_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
-
+    safe_details = _sanitize_details_for_model(details, InfluencerTransaction)
     InfluencerTransaction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
         status=InfluencerTransaction.COMPLETED,
         tx_hash=tx_hash,
-        **details,
+        **safe_details,
         influencer_id=influencer_id,
         transaction_type=transaction_type,
         tt_amount=tt_amount,
@@ -143,13 +178,13 @@ def save_onchain_action_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
-
+    safe_details = _sanitize_details_for_model(details, OnChainAction)
     OnChainAction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
         status=OnChainAction.COMPLETED,
         tx_hash=tx_hash,
-        **details,
+        **safe_details,
         tx_type=event_type,
         args=args or {},
     )

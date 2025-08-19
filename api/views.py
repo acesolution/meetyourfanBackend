@@ -1043,7 +1043,7 @@ class GuestCampaignPurchaseView(APIView):
             refresh    = RefreshToken.for_user(user)
             user_data  = UserSerializer(user).data
             # tack on any extra fields you need:
-            user_data["user_id"] = user.user_id 
+            user_data["user_id"] = str(user.user_id) 
 
             return Response({
                 "refresh": str(refresh),
