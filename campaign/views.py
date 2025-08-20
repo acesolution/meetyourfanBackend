@@ -77,13 +77,16 @@ from django.http import HttpResponseRedirect
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from django.utils import timezone as dj_timezone
+from web3.exceptions import TransactionNotFound
+
 
 User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
 SALT = getattr(settings, "MEDIA_TOKEN_SALT", "media-access")
-TTL  = getattr(settings, "MEDIA_TOKEN_TTL", 300)
+TTL = getattr(settings, "MEDIA_TOKEN_TTL", 300)
+
 
 def wait_for_tx_receipt(
     tx_hash: str, poll_interval: float = 2.0, timeout: float = 120.0
@@ -348,7 +351,7 @@ class CreateCampaignView(APIView):
                     logger.info(f"Media files list = {files}")
 
                     for f in files:
-                        
+
                         processed = f
                         if f.content_type and f.content_type.startswith("image/"):
                             # put your brand or campaign title here
@@ -500,76 +503,89 @@ class WinnerSelectionView(APIView):
         )
 
 
-class ParticipateInCampaignView(APIView):
-    permission_classes = [IsAuthenticated]
+def _compute_costs_and_tt(campaign, qty: int):
+    # unit_cost can be ticket_cost or media_cost depending on type
+    unit_cost = getattr(campaign, "ticket_cost", None) or getattr(
+        campaign, "media_cost", None
+    )
+    cost_in_credits = int(qty * unit_cost)
 
-    def post(self, request):
-        user = request.user
+    try:
+        conversion_rate = contract.functions.conversionRate().call()
+    except Exception:
+        logger.exception("Failed to fetch conversionRate")
+        raise
 
-        # 1) Basic perms check
-        if user.user_type not in ["fan", "influencer"]:
-            return Response(
-                {"error": "Only fans/influencers can participate."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+    spent_tt_whole = cost_in_credits // conversion_rate
+    return cost_in_credits, spent_tt_whole
 
-        serializer = ParticipationSerializer(data=request.data, context={"fan": user})
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        campaign = serializer.validated_data["campaign"].specific_campaign()
-        if user.user_type == "influencer" and campaign.user == user:
-            return Response(
-                {
-                    "error": "Campaign creators cannot participate in their own campaigns."
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+def perform_participation(
+    *,
+    fan,
+    campaign_id: int,
+    tickets_purchased: int | None = None,
+    media_purchased: int | None = None,
+    payment_method: str = "balance",
+    order_id: str | None = None,
+    tx_hash: str | None = None,
+):
+    """
+    Validates via ParticipationSerializer, then performs the same side-effects as ParticipateInCampaignView.
+    Returns: (participation, assigned_media_list)
+    """
 
-        # 2) Compute logical cost in credits
-        qty = (
-            serializer.validated_data.get("tickets_purchased")
-            or serializer.validated_data.get("media_purchased")
-            or 0
-        )
-        unit_cost = getattr(campaign, "ticket_cost", None) or getattr(
-            campaign, "media_cost", None
-        )
-        cost_in_credits = int(qty * unit_cost)
+    # 1) Validate with your existing serializer so all rules are reused
+    ser = ParticipationSerializer(
+        data={
+            "campaign": campaign_id,
+            "tickets_purchased": tickets_purchased,
+            "media_purchased": media_purchased,
+            "payment_method": payment_method,
+        },
+        context={"fan": fan},
+    )
+    ser.is_valid(raise_exception=True)
 
-        # 3) Fetch conversionRate from the on‐chain contract
-        try:
-            conversion_rate = contract.functions.conversionRate().call()  # e.g. R = 100
-        except Exception:
-            logger.exception("Failed to fetch conversionRate")
-            return Response({"error": "Could not fetch conversion rate"}, status=502)
+    # 2) Use the campaign-specific instance (ticket/media/meet_greet)
+    campaign = ser.validated_data["campaign"].specific_campaign()
 
-        # 5) Compute how many whole TT tokens to spend
-        spent_tt_whole = cost_in_credits // conversion_rate
+    qty = (
+        ser.validated_data.get("tickets_purchased")
+        or ser.validated_data.get("media_purchased")
+        or 0
+    )
 
-        # 2) Persist participation & escrow
-        participation = serializer.save(fan=user)
+    # 3) Cost + TT conversion (same as your view)
+    cost_in_credits, spent_tt_whole = _compute_costs_and_tt(campaign, qty)
+
+    # 4) Persist everything atomically
+    with transaction.atomic():
+        participation = ser.save(fan=fan)
+
         escrow = EscrowRecord.objects.create(
-            user=user,
+            user=fan,
             campaign=campaign,
             campaign_id=str(campaign.id),
             tt_amount=spent_tt_whole,
             credit_amount=cost_in_credits,
             status="held",
-            tx_hash="",
+            tx_hash=tx_hash
+            or "",  # you can store order_id too if your model has a field
             gas_cost_credits=0,
         )
+
         CreditSpend.objects.bulk_create(
             [
                 CreditSpend(
-                    user=user,
+                    user=fan,
                     campaign=campaign,
                     spend_type=CreditSpend.PARTICIPATION,
                     credits=cost_in_credits,
                     tt_amount=spent_tt_whole,
                 ),
                 CreditSpend(
-                    user=user,
+                    user=fan,
                     campaign=campaign,
                     spend_type=CreditSpend.GAS_FEE,
                     credits=0,
@@ -578,59 +594,72 @@ class ParticipateInCampaignView(APIView):
             ]
         )
 
-        chain(
-            hold_for_campaign_on_chain.s(
-                escrow.id,
-                campaign.id,
-                int(user.user_id),
-                spent_tt_whole,
-                cost_in_credits,
-            ),
-            save_transaction_info.s(
-                user_id=user.id,
-                campaign_id=campaign.id,
-                tx_type=Transaction.SPEND,
-                tt_amount=spent_tt_whole,
-                credits_delta=cost_in_credits,
-            ),
-        ).apply_async()
+    # 5) Kick off the on-chain + accounting tasks (as you already do)
+    chain(
+        hold_for_campaign_on_chain.s(
+            escrow.id,
+            campaign.id,
+            int(fan.user_id),
+            spent_tt_whole,
+            cost_in_credits,
+        ),
+        save_transaction_info.s(
+            user_id=fan.id,
+            campaign_id=campaign.id,
+            tx_type=Transaction.SPEND,
+            tt_amount=spent_tt_whole,
+            credits_delta=cost_in_credits,
+        ),
+    ).apply_async()
 
-        # ---------------------
-        # NEW: grant media access
-        # ---------------------
-        assigned_media = []
-        if campaign.campaign_type == "media_selling":
-            media_requested = serializer.validated_data.get("media_purchased", 0)
-            logger.info(
-                "Assigning %d media files to user %s for campaign %s",
-                media_requested,
-                user.username,
-                campaign.id,
-            )
-            assigned_media = assign_media_to_user(campaign, user, media_requested)
+    # 6) Grant media access if needed
+    assigned_media = []
+    if campaign.campaign_type == "media_selling":
+        media_requested = ser.validated_data.get("media_purchased", 0)
+        logger.info(
+            "Assigning %d media files to user %s for campaign %s",
+            media_requested,
+            fan.username,
+            campaign.id,
+        )
+        assigned_media = assign_media_to_user(campaign, fan, media_requested)
 
-        media_info = []
-        for media in assigned_media:
-            try:
-                # built-in: calls our model helper, which may raise ValueError
-                preview = media.get_preview_url()
-            except ValueError:
-                # fallback again
-                preview = generate_presigned_s3_url(media.file.name)
+    return participation, assigned_media
 
-            # built-in: .file.name is the S3 “key” under your bucket
-            signed = generate_presigned_s3_url(media.file.name)
 
-            media_info.append(
-                {
-                    "media_file_id": media.id,
-                }
-            )
+class ParticipateInCampaignView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.user_type not in ["fan", "influencer"]:
+            return Response({"error": "Only fans/influencers can participate."}, status=403)
+
+        # Keep your serializer validation here (same as before)
+        s = ParticipationSerializer(data=request.data, context={"fan": user})
+        if not s.is_valid():
+            return Response(s.errors, status=400)
+
+        v = s.validated_data
+        tickets = v.get("tickets_purchased")
+        media = v.get("media_purchased")
+        payment_method = v.get("payment_method")
+
+        participation, assigned_media = perform_participation(
+            fan=user,
+            campaign_id=v["campaign"].id,
+            tickets_purchased=tickets,
+            media_purchased=media,
+            payment_method=payment_method,
+            # no order_id/tx_hash in this manual flow
+        )
+
+        media_info = [{"media_file_id": m.id} for m in assigned_media]
 
         return Response(
             {
                 "message": "Participation successful",
-                "participation": serializer.data,  # built-in: .data comes from the DRF serializer
+                "participation": s.data,
                 "assigned_media": media_info,
             },
             status=201,
@@ -683,6 +712,89 @@ class MediaDownloadView(APIView):
         # built-in header for browser download
         resp["Content-Disposition"] = f'inline; filename="{media.file.name}"'
         return resp
+
+
+def _ensure_prefixed(h: str) -> str:
+    if not h:
+        return ""
+    return h if h.startswith("0x") else f"0x{h}"
+
+class AutoParticipateConfirmView(APIView):
+    """
+    POST body:
+    {
+      "user_id": 123,
+      "campaign_id": 456,
+      "campaign_type": "ticket" | "media_selling" | "meet_greet",
+      "entries": 3,
+      "order_id": "wert-ORD-abc",
+      "tx_hash": "0x....",
+      "idempotency_key": "optional"
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        s = AutoParticipateConfirmSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        v = s.validated_data
+
+        # Basic authz: caller must match the payload user_id
+        if str(request.user.id) != str(v["user_id"]):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        tx_hash = _ensure_prefixed(v["tx_hash"])
+
+        # Idempotency: if we already processed this tx for this user+campaign, return OK
+        if EscrowRecord.objects.filter(
+            user=request.user,
+            campaign_id=v["campaign_id"],
+            tx_hash=tx_hash
+        ).exists():
+            return Response({"status": "already_processed"}, status=status.HTTP_200_OK)
+
+        # 1) Check on-chain tx status
+        try:
+            # If your utils return a receipt-like dict, you can also inspect "status" from it.
+            # Using web3 directly is fine; TransactionNotFound => still pending.
+            receipt = w3.eth.get_transaction_receipt(tx_hash)
+        except TransactionNotFound:
+            return Response({"status": "pending"}, status=status.HTTP_202_ACCEPTED)
+
+        if receipt is None:
+            # Very old web3 could return None; treat as pending
+            return Response({"status": "pending"}, status=status.HTTP_202_ACCEPTED)
+
+        if getattr(receipt, "status", 0) != 1:
+            # mined but reverted/failed
+            return Response({"status": "failed"}, status=status.HTTP_409_CONFLICT)
+
+        # 2) Tx succeeded → start participation
+        tickets = v["entries"] if v["campaign_type"] in ("ticket", "meet_greet") else None
+        media   = v["entries"] if v["campaign_type"] == "media_selling" else None
+
+        try:
+            participation, assigned_media = perform_participation(
+                fan=request.user,
+                campaign_id=v["campaign_id"],
+                tickets_purchased=tickets,
+                media_purchased=media,
+                payment_method="balance",     # funds are on-chain balance now
+                order_id=v["order_id"],
+                tx_hash=tx_hash,              # stored on EscrowRecord for dedupe
+            )
+        except Exception as e:
+            # If business validation fails (limits, sold-out, etc.)
+            return Response({"status": "error", "detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "status": "ok",
+                "participation_id": participation.id,
+                "assigned_media": [{"media_file_id": m.id} for m in assigned_media],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class ParticipantsView(APIView):

@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
+class AutoParticipateConfirmSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    campaign_id = serializers.IntegerField()
+    campaign_type = serializers.ChoiceField(choices=["ticket", "media_selling", "meet_greet"])
+    entries = serializers.IntegerField(min_value=1)
+    order_id = serializers.CharField()
+    tx_hash = serializers.CharField()
+    idempotency_key = serializers.CharField(required=False, allow_blank=True)
+
 class UserCampaignSerializer(serializers.ModelSerializer):
     """
     This serializer returns the essential user data.
@@ -237,6 +246,8 @@ class PolymorphicCampaignSerializer(serializers.Serializer):
             # Remove ticket_limit_per_fan from the data for media-selling campaigns.
             data.pop('ticket_limit_per_fan', None)
         return data
+    
+
 
 class ParticipationSerializer(serializers.ModelSerializer):
     class Meta:
