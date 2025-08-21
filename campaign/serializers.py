@@ -106,6 +106,15 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
         elif instance.campaign_type == 'meet_greet':
             representation['ticket_cost'] = specific_instance.ticket_cost
             representation['total_tickets'] = specific_instance.total_tickets
+            
+        # after computing total_*_sold
+        if instance.campaign_type in ['ticket', 'meet_greet']:
+            spec = instance.specific_campaign()
+            representation['entries_left'] = max(0, spec.total_tickets - representation['total_tickets_sold'])
+        elif instance.campaign_type == 'media_selling':
+            spec = instance.specific_campaign()
+            representation['entries_left'] = max(0, spec.total_media - representation['total_media_sold'])
+
 
         return representation
     
