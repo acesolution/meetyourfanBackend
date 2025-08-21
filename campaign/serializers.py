@@ -91,30 +91,64 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         # Start with the base representation
         representation = super().to_representation(instance)
-        
-        # Add type-specific fields if the campaign is of a subclass type.
+
+        # Get concrete subclass once (avoids duplicate calls)
         specific_instance = instance.specific_campaign()
+
         if instance.campaign_type == 'ticket':
             representation['ticket_cost'] = specific_instance.ticket_cost
             representation['total_tickets'] = specific_instance.total_tickets
+
+            # Compute how many tickets have been sold so far.
+            # built-in sum(): iterates over numbers and accumulates the total.
+            total_tickets_sold = sum(
+                (p.tickets_purchased or 0)  # built-in or: uses right-hand value if left is falsy (None/0)
+                for p in instance.participations.all()
+            )
+            representation['total_tickets_sold'] = total_tickets_sold
+
+            # built-in max(a, b): returns the greater of a and b. Here we clamp at 0 so we never go negative.
+            representation['entries_left'] = max(
+                0,
+                specific_instance.total_tickets - total_tickets_sold,
+            )
+
         elif instance.campaign_type == 'media_selling':
             representation['media_cost'] = specific_instance.media_cost
             representation['total_media'] = specific_instance.total_media
-            # Include media_file if needed:
+
+            # Include media files (as you had)
             media_files_qs = specific_instance.media_files.all()
-            representation['media_files'] = MediaFileSerializer(media_files_qs, many=True, context=self.context).data
+            representation['media_files'] = MediaFileSerializer(
+                media_files_qs, many=True, context=self.context
+            ).data
+
+            # Compute how many media items have been sold so far.
+            total_media_sold = sum(
+                (p.media_purchased or 0)
+                for p in instance.participations.all()
+            )
+            representation['total_media_sold'] = total_media_sold
+
+            representation['entries_left'] = max(
+                0,
+                specific_instance.total_media - total_media_sold,
+            )
+
         elif instance.campaign_type == 'meet_greet':
             representation['ticket_cost'] = specific_instance.ticket_cost
             representation['total_tickets'] = specific_instance.total_tickets
-            
-        # after computing total_*_sold
-        if instance.campaign_type in ['ticket', 'meet_greet']:
-            spec = instance.specific_campaign()
-            representation['entries_left'] = max(0, spec.total_tickets - representation['total_tickets_sold'])
-        elif instance.campaign_type == 'media_selling':
-            spec = instance.specific_campaign()
-            representation['entries_left'] = max(0, spec.total_media - representation['total_media_sold'])
 
+            total_tickets_sold = sum(
+                (p.tickets_purchased or 0)
+                for p in instance.participations.all()
+            )
+            representation['total_tickets_sold'] = total_tickets_sold
+
+            representation['entries_left'] = max(
+                0,
+                specific_instance.total_tickets - total_tickets_sold,
+            )
 
         return representation
     
@@ -478,9 +512,9 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
 
     # Calculate total tickets sold for ticket or meet & greet campaigns.
     def get_total_tickets_sold(self, obj):
-        if obj.campaign_type in ['ticket', 'meet_greet']:
-            return sum(p.tickets_purchased or 0 for p in obj.participations.all())
-        return None
+        if obj.campaign_type == 'media_selling':
+            return sum((p.media_purchased or 0) for p in obj.participations.all())
+        return 0
 
     # Calculate total media sold for media selling campaigns.
     def get_total_media_sold(self, obj):
