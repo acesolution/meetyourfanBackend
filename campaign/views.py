@@ -20,6 +20,7 @@ from .serializers import (
     ProfileCampaignSerializer,
     UserCampaignSerializer,
     MediaAccessSerializer,
+    AutoParticipateConfirmSerializer
 )
 import random
 from .models import (
@@ -721,16 +722,8 @@ def _ensure_prefixed(h: str) -> str:
 
 class AutoParticipateConfirmView(APIView):
     """
-    POST body:
-    {
-      "user_id": 123,
-      "campaign_id": 456,
-      "campaign_type": "ticket" | "media_selling" | "meet_greet",
-      "entries": 3,
-      "order_id": "wert-ORD-abc",
-      "tx_hash": "0x....",
-      "idempotency_key": "optional"
-    }
+    POST { campaign_id: int, entries: int, tx_hash: str }
+    Waits (up to TX_MAX_WAIT) for the tx to confirm. On success, participates.
     """
     permission_classes = [IsAuthenticated]
 
@@ -739,52 +732,60 @@ class AutoParticipateConfirmView(APIView):
         s.is_valid(raise_exception=True)
         v = s.validated_data
 
-        # Basic authz: caller must match the payload user_id
-        if str(request.user.id) != str(v["user_id"]):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
         tx_hash = _ensure_prefixed(v["tx_hash"])
 
-        # Idempotency: if we already processed this tx for this user+campaign, return OK
+        # Idempotency by (user, campaign, tx_hash)
         if EscrowRecord.objects.filter(
             user=request.user,
             campaign_id=v["campaign_id"],
-            tx_hash=tx_hash
+            tx_hash=tx_hash,
         ).exists():
             return Response({"status": "already_processed"}, status=status.HTTP_200_OK)
 
-        # 1) Check on-chain tx status
+        # -------- 1) Wait for on-chain confirmation (blocking up to timeout) --------
         try:
-            # If your utils return a receipt-like dict, you can also inspect "status" from it.
-            # Using web3 directly is fine; TransactionNotFound => still pending.
+            # Best-effort: fast path (maybe it’s already mined)
             receipt = w3.eth.get_transaction_receipt(tx_hash)
         except TransactionNotFound:
-            return Response({"status": "pending"}, status=status.HTTP_202_ACCEPTED)
+            receipt = None
 
         if receipt is None:
-            # Very old web3 could return None; treat as pending
-            return Response({"status": "pending"}, status=status.HTTP_202_ACCEPTED)
+            try:
+                receipt = w3.eth.wait_for_transaction_receipt(
+                    tx_hash, timeout=TX_MAX_WAIT, poll_latency=TX_POLL_LATENCY
+                )
+            except (TransactionNotFound, TimeExhausted):
+                # Still pending after our wait window
+                return Response({"status": "pending"}, status=status.HTTP_202_ACCEPTED)
 
-        if getattr(receipt, "status", 0) != 1:
-            # mined but reverted/failed
+        if receipt is None or getattr(receipt, "status", 0) != 1:
+            # Mined but failed / reverted
             return Response({"status": "failed"}, status=status.HTTP_409_CONFLICT)
 
-        # 2) Tx succeeded → start participation
-        tickets = v["entries"] if v["campaign_type"] in ("ticket", "meet_greet") else None
-        media   = v["entries"] if v["campaign_type"] == "media_selling" else None
+        # -------- 2) Determine campaign type and map entries accordingly --------
+        try:
+            # Your serializer in perform_participation resolves the generic campaign id.
+            # We only need to know how to split 'entries' into tickets/media.
+            campaign = Campaign.objects.get(id=v["campaign_id"]).specific_campaign()
+            ctype = getattr(campaign, "campaign_type", None)  # 'ticket' | 'media_selling' | 'meet_greet'
+        except Campaign.DoesNotExist:
+            return Response({"detail": "Campaign not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        tickets = v["entries"] if ctype in ("ticket", "meet_greet") else None
+        media   = v["entries"] if ctype == "media_selling" else None
+
+        # -------- 3) Perform participation (atomic) --------
         try:
             participation, assigned_media = perform_participation(
                 fan=request.user,
                 campaign_id=v["campaign_id"],
                 tickets_purchased=tickets,
                 media_purchased=media,
-                payment_method="balance",     # funds are on-chain balance now
-                order_id=v["order_id"],
-                tx_hash=tx_hash,              # stored on EscrowRecord for dedupe
+                payment_method="balance",  # funds have been paid on-chain
+                order_id=None,             # optional
+                tx_hash=tx_hash,           # stored on EscrowRecord for dedupe
             )
         except Exception as e:
-            # If business validation fails (limits, sold-out, etc.)
             return Response({"status": "error", "detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
@@ -795,7 +796,6 @@ class AutoParticipateConfirmView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
 
 class ParticipantsView(APIView):
     permission_classes = []  # or use [AllowAny] if you want open access
