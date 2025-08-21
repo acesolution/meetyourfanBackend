@@ -87,7 +87,8 @@ logger = logging.getLogger(__name__)
 
 SALT = getattr(settings, "MEDIA_TOKEN_SALT", "media-access")
 TTL = getattr(settings, "MEDIA_TOKEN_TTL", 300)
-
+TX_MAX_WAIT = getattr(settings, "TX_RECEIPT_MAX_WAIT_SECONDS", 60)
+TX_POLL_LATENCY = getattr(settings, "TX_RECEIPT_POLL_LATENCY", 2)
 
 def wait_for_tx_receipt(
     tx_hash: str, poll_interval: float = 2.0, timeout: float = 120.0
@@ -713,6 +714,7 @@ class MediaDownloadView(APIView):
         # built-in header for browser download
         resp["Content-Disposition"] = f'inline; filename="{media.file.name}"'
         return resp
+
 
 
 def _ensure_prefixed(h: str) -> str:
