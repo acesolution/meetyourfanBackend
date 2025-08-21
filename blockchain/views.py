@@ -36,8 +36,8 @@ from django.db.models import Q
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction as db_transaction
-from django.db.models import Sum, Case, When, F, DecimalField, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Sum, Case, When, F, DecimalField, Value, Max, Count
+from django.db.models.functions import Coalesce, Abs
 
 
 logger = logging.getLogger(__name__)
@@ -821,3 +821,83 @@ def mark_deposit_failed(order_id: str):
     # e.g.:
     # Deposit.objects.filter(order_id=order_id).update(status='failed')
     pass
+
+
+class FanSpendingsView(APIView):
+    """
+    GET /api/blockchain/fan-spendings/
+      Optional query params:
+        - start_date=YYYY-MM-DD
+        - end_date=YYYY-MM-DD
+        - campaign_title=foo   (matches title or slug, case-insensitive partial)
+        - breakdown=true       (include per-campaign totals)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # base: only this fan, only completed spends
+        qs = Transaction.objects.filter(
+            user=user,
+            status=Transaction.COMPLETED,
+            tx_type=Transaction.SPEND,
+        ).select_related("campaign")
+
+        # reuse your existing filter helper (dates, title, credit range, etc.)
+        qs = _apply_filters_to_qs(qs, request.query_params)
+
+        # totals (make spends positive by using Abs)
+        totals = qs.aggregate(
+            total_credits=Coalesce(
+                Sum(Abs(F("credits_delta")), output_field=DecimalField()),
+                Value(0, output_field=DecimalField()),
+            ),
+            total_tt=Coalesce(
+                Sum(Abs(F("tt_amount")), output_field=DecimalField()),
+                Value(0, output_field=DecimalField()),
+            ),
+            tx_count=Coalesce(Count("id"), 0),
+            last_tx=Max("timestamp"),
+        )
+
+        payload = {
+            "total_credits_spent": str(totals["total_credits"] or 0),
+            "total_tt_spent":      str(totals["total_tt"] or 0),
+            "transactions_count":  totals["tx_count"] or 0,
+            "last_transaction_at": totals["last_tx"],
+        }
+
+        # optional per-campaign breakdown
+        want_breakdown = str(request.query_params.get("breakdown", "")).lower() in {"1", "true", "yes"}
+        if want_breakdown:
+            rows = (
+                qs.values("campaign_id", "campaign__title", "campaign__slug")
+                  .annotate(
+                      credits_spent=Coalesce(
+                          Sum(Abs(F("credits_delta")), output_field=DecimalField()),
+                          Value(0, output_field=DecimalField()),
+                      ),
+                      tt_spent=Coalesce(
+                          Sum(Abs(F("tt_amount")), output_field=DecimalField()),
+                          Value(0, output_field=DecimalField()),
+                      ),
+                      tx_count=Coalesce(Count("id"), 0),
+                      last_tx=Max("timestamp"),
+                  )
+                  .order_by("-credits_spent", "-last_tx")
+            )
+            payload["breakdown"] = [
+                {
+                    "campaign_id": r["campaign_id"],
+                    "title":       r["campaign__title"],
+                    "slug":        r["campaign__slug"],
+                    "credits_spent": str(r["credits_spent"]),
+                    "tt_spent":      str(r["tt_spent"]),
+                    "transactions_count": r["tx_count"],
+                    "last_transaction_at": r["last_tx"],
+                }
+                for r in rows
+            ]
+
+        return Response(payload, status=200)
