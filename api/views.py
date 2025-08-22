@@ -360,7 +360,7 @@ class ResendVerificationCodeView(APIView):
                           <tr>
                             <td style="padding: 2rem;">
                               <div style="text-align: center; margin-bottom: 1.5rem;">
-                                <img src="https://meetyourfan.io/static/assets/images/MeetYourFanLogoVertical.png" alt="Logo" style="max-width: 150px;">
+                                <img src="https://meetyourfans3bucket.s3.us-east-1.amazonaws.com/static/images_folder/MeetYourFanLogoHorizontal-v2.png" alt="Logo" style="max-width: 150px;">
                               </div>
                               <h2 style="font-size: 24px; color: #000; margin-bottom: 1rem; text-align: center;">
                                 New Code for Email Verification
@@ -425,6 +425,8 @@ class ResendVerificationCodeView(APIView):
 
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class EditContactInfoView(APIView):
     permission_classes = [IsAuthenticated]
 
