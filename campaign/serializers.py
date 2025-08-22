@@ -79,7 +79,9 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
             'liked_by_user',
             'participated',
             'participants_count',
-            'own_campaign'
+            'own_campaign',
+            'npn_campaign',              # 👈 add this
+            'refund_on_deadline', 
         ]
         
     def get_own_campaign(self, obj):
@@ -376,7 +378,7 @@ class WinnerSerializer(serializers.ModelSerializer):
 class ExploreCampaignSerializer(serializers.ModelSerializer):
     class Meta:
         model = Campaign
-        fields = ['id', 'title', 'banner_image', 'campaign_type', 'deadline', 'details']
+        fields = ['id', 'title', 'banner_image', 'campaign_type', 'deadline', 'details', 'npn_campaign']
 
 class InfluencerCampaignSerializer(serializers.ModelSerializer):
     is_active = serializers.SerializerMethodField()
@@ -392,7 +394,7 @@ class InfluencerCampaignSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'banner_image', 'campaign_type', 'deadline', 'winner_slots',
             'winners_selected', 'details', 'created_at', 'updated_at', 'is_closed', 'is_active',
-            'profile', 'likes_count', 'liked_by_user', 'participated', 'participants_count', 'own_campaign',
+            'profile', 'likes_count', 'liked_by_user', 'participated', 'participants_count', 'own_campaign', 'npn_campaign'
         ]
     
     def get_own_campaign(self, obj):
