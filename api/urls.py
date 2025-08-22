@@ -27,7 +27,9 @@ from .views import (
     SocialMediaLinkDetailAPIView,
     UpdateEmailView,
     CurrentUserView,
-    GuestCampaignPurchaseView
+    GuestCampaignPurchaseView,
+    DeleteCoverPhotoView,
+    DeleteProfilePictureView,
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -54,7 +56,8 @@ urlpatterns = [
     path('influencer/<int:influencer_id>/', InfluencerDetailView.as_view(), name='influencer-detail'),
     path('profile/status/', UpdateProfileStatusView.as_view(), name='update-profile-status'),
     path('profile/upload-images/', ProfileImageUploadView.as_view(), name='update-profile-images'),
-    
+    path("profile/picture/", DeleteProfilePictureView.as_view()),
+    path("profile/cover/",   DeleteCoverPhotoView.as_view()),
     # Instagram integration
     path('instagram/connect/', InstagramConnectView.as_view(), name='instagram-connect'),
     path('instagram/callback/', InstagramCallbackView.as_view(), name='instagram-callback'),

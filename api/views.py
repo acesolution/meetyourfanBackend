@@ -519,6 +519,46 @@ class ProfileImageUploadView(APIView):
         serializer.save()
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    
+# If you have separate FanProfile/InfluencerProfile, find the one that exists:
+def get_user_profile_obj(user):
+    # getattr: built-in to safely read attribute; returns default if missing
+    # If your project uses a single Profile model, just return user.profile.
+    for attr in ("fanprofile", "influencerprofile", "profile"):
+        obj = getattr(user, attr, None)
+        if obj:
+            return obj
+    return None
+
+class DeleteProfilePictureView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        prof = get_user_profile_obj(request.user)
+        if not prof or not getattr(prof, "profile_picture", None):
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # FieldFile.delete(): built-in on Django File/ImageField that deletes the
+        # underlying file from the storage backend (S3 via django-storages)
+        prof.profile_picture.delete(save=False)
+        # set to empty/None to persist removal in DB
+        prof.profile_picture = None
+        prof.save(update_fields=["profile_picture"])  # update_fields: built-in to save only listed fields
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class DeleteCoverPhotoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        prof = get_user_profile_obj(request.user)
+        if not prof or not getattr(prof, "cover_photo", None):
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        prof.cover_photo.delete(save=False)  # physically deletes from S3
+        prof.cover_photo = None
+        prof.save(update_fields=["cover_photo"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class InfluencersView(APIView):
     permission_classes = [AllowAny]
