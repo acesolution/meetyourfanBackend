@@ -557,13 +557,22 @@ def perform_participation(
         or ser.validated_data.get("media_purchased")
         or 0
     )
+    
+    is_free = ser.validated_data.get("is_free_entry", False) or ser.validated_data.get("payment_method") == "free"
 
-    # 3) Cost + TT conversion (same as your view)
-    cost_in_credits, spent_tt_whole = _compute_costs_and_tt(campaign, qty)
 
     # 4) Persist everything atomically
     with transaction.atomic():
         participation = ser.save(fan=fan)
+        
+        if is_free:
+            # ✅ nothing on-chain, no CreditSpend, no EscrowRecord
+            assigned_media = []
+            # and importantly, no media unlocks for free entries:
+            return participation, assigned_media
+        
+        cost_in_credits, spent_tt_whole = _compute_costs_and_tt(campaign, qty)
+        
 
         escrow = EscrowRecord.objects.create(
             user=fan,

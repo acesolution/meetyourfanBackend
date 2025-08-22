@@ -112,7 +112,10 @@ class Participation(models.Model):
         ('bank_transfer', 'Bank Transfer'),
         ('balance', 'On-chain Balance'),
         ('wert', 'Wert'),
+        ('free', 'Free'),
     ]
+    
+    is_free_entry = models.BooleanField(default=False)
 
     fan = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="participations"
@@ -127,31 +130,27 @@ class Participation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        # For media selling campaigns, reduce available media count.
+        # ⛔ do NOT consume stock for free entries
         if isinstance(self.campaign, MediaSellingCampaign):
-            if self.media_purchased:
+            if self.media_purchased and not self.is_free_entry:      # 👈 guard
                 self.campaign.total_media -= self.media_purchased
                 self.campaign.save()
 
-        # Save the participation first.
         super().save(*args, **kwargs)
 
-        # --- Auto-close logic for ticket-based or meet & greet campaigns ---
-        # Retrieve the specific subclass instance (e.g., TicketCampaign or MeetAndGreetCampaign)
+        # Auto-close (tickets/meets): only paid purchases count toward goal
         campaign_specific = self.campaign.specific_campaign()
-        
         if campaign_specific.campaign_type in ['ticket', 'meet_greet'] and campaign_specific.auto_close_on_goal_met:
-            total_sold = sum(p.tickets_purchased for p in campaign_specific.participations.all())
-            if total_sold >= campaign_specific.total_tickets:
-                # 1) close in DB
+            total_paid = sum(
+                p.tickets_purchased or 0
+                for p in campaign_specific.participations.filter(is_free_entry=False)  # 👈 only paid
+            )
+            if total_paid >= campaign_specific.total_tickets:
                 campaign_specific.close_campaign()
-
-                # 2) schedule the on-chain release in a batch
                 seller_id = int(campaign_specific.user.user_id)
                 def _dispatch():
                     release_all_holds_for_campaign_task.delay(campaign_specific.id, seller_id)
                 transaction.on_commit(_dispatch)
-
 
 class CampaignWinner(models.Model):
     campaign = models.ForeignKey(

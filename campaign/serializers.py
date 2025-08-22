@@ -103,16 +103,13 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
 
             # Compute how many tickets have been sold so far.
             # built-in sum(): iterates over numbers and accumulates the total.
-            total_tickets_sold = sum(
-                (p.tickets_purchased or 0)  # built-in or: uses right-hand value if left is falsy (None/0)
-                for p in instance.participations.all()
-            )
-            representation['total_tickets_sold'] = total_tickets_sold
-
+            paid = sum((p.tickets_purchased or 0)
+                       for p in instance.participations.filter(is_free_entry=False))  # 👈 only paid
+            representation['total_tickets_sold'] = paid
             # built-in max(a, b): returns the greater of a and b. Here we clamp at 0 so we never go negative.
             representation['entries_left'] = max(
                 0,
-                specific_instance.total_tickets - total_tickets_sold,
+                specific_instance.total_tickets - paid,
             )
 
         elif instance.campaign_type == 'media_selling':
@@ -126,15 +123,13 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
             ).data
 
             # Compute how many media items have been sold so far.
-            total_media_sold = sum(
-                (p.media_purchased or 0)
-                for p in instance.participations.all()
-            )
-            representation['total_media_sold'] = total_media_sold
+            paid = sum((p.media_purchased or 0)
+                       for p in instance.participations.filter(is_free_entry=False))  # 👈 only paid
+            representation['total_media_sold'] = paid
 
             representation['entries_left'] = max(
                 0,
-                specific_instance.total_media - total_media_sold,
+                specific_instance.total_media - paid,
             )
 
         elif instance.campaign_type == 'meet_greet':
@@ -300,6 +295,34 @@ class ParticipationSerializer(serializers.ModelSerializer):
         campaign = data['campaign']
         fan = self.context['fan']  # `fan` represents the current user, whether a fan or an influencer
 
+        # --- FREE ENTRY PATH ---------------------------------------------------
+        is_free = campaign.npn_campaign and data.get('payment_method') == 'free'
+        if is_free:
+            # 1) one per user
+            if Participation.objects.filter(
+                fan=fan, campaign=campaign, is_free_entry=True
+            ).exists():
+                raise serializers.ValidationError("You already used your free entry for this campaign.")
+
+            # 2) require at least 1 entry (default to 1)
+            entries = data.get('tickets_purchased') or data.get('media_purchased') or 1
+            if entries <= 0:
+                entries = 1
+
+            # set counts into the right field for this campaign type
+            if hasattr(campaign, 'total_tickets'):
+                data['tickets_purchased'] = entries
+                data['media_purchased'] = None
+            else:
+                data['media_purchased'] = entries
+                data['tickets_purchased'] = None
+
+            data['amount'] = Decimal('0')          # 👈 zero cost
+            data['is_free_entry'] = True           # 👈 flag so views/logic can skip on-chain
+            return data
+        # --- END FREE PATH -----------------------------------------------------
+
+        
         # Retrieve the correct subclass for the campaign (ensures we have the specific campaign type)
         campaign = campaign.specific_campaign()
 
