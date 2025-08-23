@@ -677,7 +677,7 @@ class ParticipateInCampaignView(APIView):
         )
 
 
-class UserMediaAccessListView(ListAPIView):
+class CampaignUserMediaAccessListView(ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MediaAccessSerializer
 
@@ -686,6 +686,15 @@ class UserMediaAccessListView(ListAPIView):
         return MediaAccess.objects.filter(
             user=self.request.user,
             media_file__campaign_id=campaign_id,  # assuming relation
+        )
+        
+class UserMediaAccessListView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MediaAccessSerializer
+
+    def get_queryset(self):
+        return MediaAccess.objects.filter(
+            user=self.request.user,
         )
 
 
@@ -1154,7 +1163,7 @@ class MediaDisplayView(APIView):
         object_key = media.file.name.lstrip("/")
         base_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{object_key}"
 
-        expire = dt.datetime.now(dt.timezone.utc) + timedelta(minutes=15)
+        expire = dt.datetime.now(dt.timezone.utc) + timedelta(minutes=1)
         signer = CloudFrontSigner(
             settings.CLOUDFRONT_KEY_PAIR_ID,
             _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY),
@@ -1163,13 +1172,3 @@ class MediaDisplayView(APIView):
         return HttpResponseRedirect(signed_url)
 
 
-class MyMediaAccessListView(ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = MediaAccessSerializer
-
-    def get_queryset(self):
-        # all media this user can access, newest first
-        return (MediaAccess.objects
-                .filter(user=self.request.user)
-                .select_related("media_file", "media_file__campaign")
-                .order_by("-created_at"))

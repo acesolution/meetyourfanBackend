@@ -16,10 +16,10 @@ from .views import (
     DashboardView,
     CampaignDashboardDetailView,
     FanAnalyticsView,
-    UserMediaAccessListView,
+    CampaignUserMediaAccessListView,
     MediaDisplayView,  # Add this import if not present
     AutoParticipateConfirmView,
-    MyMediaAccessListView
+
 )
 
 app_name = "campaign"
@@ -40,9 +40,8 @@ urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('dashboard/campaign/<int:campaign_id>/', CampaignDashboardDetailView.as_view(), name='campaign-dashboard-detail'),
     path('fan/analytics/', FanAnalyticsView.as_view(), name='fan-analytics'),
-    path('view/<int:campaign_id>/media-access/', UserMediaAccessListView.as_view(), name='media-access'),
+    path('view/<int:campaign_id>/media-access/', CampaignUserMediaAccessListView.as_view(), name='media-access'),
     path('media-display/<int:media_id>/', MediaDisplayView.as_view(), name='media-display'),
     path("auto-participate/confirm/", AutoParticipateConfirmView.as_view(), name="auto-participate-confirm"),
-    path('my/media/', MyMediaAccessListView.as_view(), name='my-media'),
 ]
 
