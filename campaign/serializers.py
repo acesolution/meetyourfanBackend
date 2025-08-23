@@ -583,13 +583,25 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
 class MediaAccessSerializer(serializers.ModelSerializer):
     media_file_id = serializers.IntegerField(source='media_file.id', read_only=True)
     preview_url = serializers.SerializerMethodField()
+    play_url      = serializers.SerializerMethodField()            # 👈 add
+    content_type  = serializers.CharField(source='media_file.content_type', read_only=True)  # 👈 add
+    campaign_id   = serializers.IntegerField(source='media_file.campaign_id', read_only=True)
+    campaign_title= serializers.CharField(source='media_file.campaign.title', read_only=True)
 
     class Meta:
         model = MediaAccess
-        fields = ['id', 'media_file_id', 'preview_url', 'created_at']
+        fields = ['id', 'media_file_id', 'preview_url', 'play_url',
+                  'content_type', 'campaign_id', 'campaign_title', 'created_at']
 
     def get_preview_url(self, obj):
         request = self.context.get("request")
         if obj.media_file.preview_image:
             return request.build_absolute_uri(obj.media_file.preview_image.url)
         return None
+
+    def get_play_url(self, obj):
+        request = self.context['request']
+        user = request.user
+        token = signer.sign(f"{obj.media_file.id}:{user.id}")
+        path  = reverse("campaign:media-display", kwargs={"media_id": obj.media_file.id})
+        return request.build_absolute_uri(f"{path}?t={token}")

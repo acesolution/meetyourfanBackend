@@ -1154,10 +1154,22 @@ class MediaDisplayView(APIView):
         object_key = media.file.name.lstrip("/")
         base_url = f"https://{settings.CLOUDFRONT_DOMAIN}/{object_key}"
 
-        expire = dt.datetime.now(dt.timezone.utc) + timedelta(minutes=1)
+        expire = dt.datetime.now(dt.timezone.utc) + timedelta(minutes=15)
         signer = CloudFrontSigner(
             settings.CLOUDFRONT_KEY_PAIR_ID,
             _rsa_signer_loader(settings.CLOUDFRONT_PRIVATE_KEY),
         )
         signed_url = signer.generate_presigned_url(base_url, date_less_than=expire)
         return HttpResponseRedirect(signed_url)
+
+
+class MyMediaAccessListView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MediaAccessSerializer
+
+    def get_queryset(self):
+        # all media this user can access, newest first
+        return (MediaAccess.objects
+                .filter(user=self.request.user)
+                .select_related("media_file", "media_file__campaign")
+                .order_by("-created_at"))
