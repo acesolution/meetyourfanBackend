@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from .utils import generate_presigned_s3_url
 from blockchain.tasks import release_all_holds_for_campaign_task
+import mimetypes
 
 class Campaign(models.Model):
     
@@ -183,11 +184,14 @@ class MediaFile(models.Model):
         return f"Media for {self.campaign.title}"
     
     def save(self, *args, **kwargs):
-        # built-in: getattr returns attribute or default; request upload has content_type on the file obj.
         if hasattr(self.file, "file") and hasattr(self.file.file, "content_type") and not self.content_type:
             self.content_type = self.file.file.content_type or ""
-        super().save(*args, **kwargs)  # built-in: super() calls parent class method
-
+        if not self.content_type:
+            # Fallback by filename extension
+            guess, _ = mimetypes.guess_type(self.file.name)
+            if guess:
+                self.content_type = guess
+        super().save(*args, **kwargs)
     
 class CreditSpend(models.Model):
     PARTICIPATION = 'participation'
