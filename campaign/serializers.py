@@ -583,6 +583,7 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
 class MediaAccessSerializer(serializers.ModelSerializer):
     media_file_id = serializers.IntegerField(source='media_file.id', read_only=True)
     preview_url = serializers.SerializerMethodField()
+    
 
     class Meta:
         model = MediaAccess

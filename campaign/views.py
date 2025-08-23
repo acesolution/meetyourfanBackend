@@ -20,7 +20,8 @@ from .serializers import (
     ProfileCampaignSerializer,
     UserCampaignSerializer,
     MediaAccessSerializer,
-    AutoParticipateConfirmSerializer
+    AutoParticipateConfirmSerializer,
+    MediaFileSerializer
 )
 import random
 from .models import (
@@ -37,7 +38,7 @@ from .models import (
 )
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.db.models import Sum, Count, Q
+from django.db.models import Sum, Count, Q, Max
 from decimal import Decimal
 from django.conf import settings
 import logging
@@ -687,15 +688,6 @@ class CampaignUserMediaAccessListView(ListAPIView):
             user=self.request.user,
             media_file__campaign_id=campaign_id,  # assuming relation
         )
-        
-class UserMediaAccessListView(ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = MediaAccessSerializer
-
-    def get_queryset(self):
-        return MediaAccess.objects.filter(
-            user=self.request.user,
-        )
 
 
 class MediaDownloadView(APIView):
@@ -1171,4 +1163,37 @@ class MediaDisplayView(APIView):
         signed_url = signer.generate_presigned_url(base_url, date_less_than=expire)
         return HttpResponseRedirect(signed_url)
 
+
+class MyMediaFilesView(ListAPIView):
+    """
+    GET /campaign/my/media/
+    Returns MediaFile objects the authenticated user has access to,
+    serialized by your existing MediaFileSerializer (so `file_url` is your
+    /campaign/media-display/<id>?t=... route and `preview_url` is the thumb).
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = MediaFileSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = (
+            MediaFile.objects
+            # built-in: .filter() narrows rows; `accesses` is your reverse FK from MediaAccess
+            .filter(accesses__user=user)
+            # built-in: .select_related() joins a FK in the same query (useful if you want campaign fields later)
+            .select_related("campaign")
+            # built-in: .annotate() computes extra columns; here we compute the latest access timestamp
+            .annotate(last_access=Max("accesses__created_at"))
+            # built-in: .order_by() sorts; '-' means DESC (newest first)
+            .order_by("-last_access", "-uploaded_at")
+            # built-in: .distinct() removes duplicates if the join creates multiple rows
+            .distinct()
+        )
+
+        # Optional filter: /campaign/my/media/?campaign=123
+        cid = self.request.query_params.get("campaign")
+        if cid:
+            qs = qs.filter(campaign_id=cid)  # built-in: WHERE campaign_id = <cid>
+
+        return qs
 
