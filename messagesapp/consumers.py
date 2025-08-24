@@ -53,6 +53,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         logger.info(f"User {self.user.username} connected to conversation {self.conversation_id}.")
         await self.accept()
+        
+        # presence: online now
+        await self.set_presence(is_online=True)
+        
+        # auto-mark other people's "sent" as delivered when I open the chat
+        delivered_ids = await self.mark_all_unseen_as_delivered()
+        if delivered_ids:
+            await self.channel_layer.group_send(
+                self.conversation_group_name,
+                {
+                    'type': 'delivered_receipt',
+                    'message_ids': delivered_ids,
+                    'user_id': self.user.id,
+                }
+            )
+
 
     async def disconnect(self, close_code):
         """Handle WebSocket disconnection."""
@@ -60,7 +76,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         conv_id = getattr(self, 'conversation_id', '<unknown>')
         group = getattr(self, 'conversation_group_name', None)
         
-        logger.info(f"User {self.user.username} disconnected from conversation {conv_id}.")
         
         # Only discard if we actually joined
         if group:
@@ -69,6 +84,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 group,
                 self.channel_name
             )
+            
+        # presence: offline + last_seen now
+        await self.set_presence(is_online=False)
+        
+    @sync_to_async
+    def set_presence(self, is_online: bool):
+        if hasattr(self.user, 'profile') and self.user.profile:
+            p = self.user.profile
+            p.is_online = is_online
+            p.last_seen = timezone.now()
+            p.save(update_fields=['is_online', 'last_seen'])
         
     @sync_to_async
     def get_profile_data(self):
@@ -87,6 +113,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "profile_picture": profile_picture_url
             }
         return {}
+    
+    @sync_to_async
+    def mark_all_unseen_as_delivered(self):
+        qs = Message.objects.filter(
+            conversation_id=self.conversation_id,
+            status='sent'
+        ).exclude(sender=self.user)
+        ids = list(qs.values_list('id', flat=True))
+        if ids:
+            qs.update(status='delivered')
+        return ids
 
     async def receive(self, text_data):
         """Handle incoming WebSocket messages."""
@@ -195,6 +232,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         }
                     )
 
+            elif event_type == 'heartbeat':
+                await self.set_presence(is_online=True)  # bumps last_seen
+                return
                     
             else:
                 await self.send(json.dumps({"error": f"Unknown event type: {event_type}"}))

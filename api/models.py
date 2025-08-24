@@ -48,7 +48,9 @@ class Profile(models.Model):
     profile_picture = models.ImageField(upload_to='media/public/profile_pictures/',storage=PublicMediaStorage(), blank=True, null=True)
     cover_photo = models.ImageField(upload_to='media/public/cover_photos/',storage=PublicMediaStorage(), blank=True, null=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='public')  # New field
-
+    last_seen = models.DateTimeField(null=True, blank=True)
+    is_online = models.BooleanField(default=False)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

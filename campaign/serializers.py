@@ -185,6 +185,9 @@ class MediaFileSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
     preview_url = serializers.SerializerMethodField()
     has_access = serializers.SerializerMethodField()
+    campaign_id     = serializers.IntegerField(source="media_file.campaign.id", read_only=True)
+    campaign_title  = serializers.CharField(source="media_file.campaign.title", read_only=True)
+    content_type    = serializers.CharField(source="media_file.content_type", read_only=True)
 
     class Meta:
         model = MediaFile

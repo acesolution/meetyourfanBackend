@@ -15,7 +15,7 @@ class ProfileMessagesSerializer(serializers.ModelSerializer):
     class Meta:
         # Adjust the fields below according to your custom user model.
         model = Profile
-        fields = ('id', 'name', 'profile_picture')  # add or remove fields as needed
+        fields = ('id', 'name', 'profile_picture', 'last_seen', 'is_online')  # add or remove fields as needed
 
 class UserSerializer(serializers.ModelSerializer):
     profile = ProfileMessagesSerializer(read_only=True)
