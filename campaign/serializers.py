@@ -187,11 +187,10 @@ class MediaFileSerializer(serializers.ModelSerializer):
     has_access = serializers.SerializerMethodField()
     campaign_id     = serializers.IntegerField(source="media_file.campaign.id", read_only=True)
     campaign_title  = serializers.CharField(source="media_file.campaign.title", read_only=True)
-    content_type    = serializers.CharField(source="media_file.content_type", read_only=True)
 
     class Meta:
         model = MediaFile
-        fields = ['id', 'preview_url', 'file_url', 'has_access', "content_type"]
+        fields = ['id', 'preview_url', 'file_url', 'has_access', "content_type", "campaign_id", "campaign_title", "content_type"]
 
     def get_has_access(self, obj):
         user = self.context.get('request').user
