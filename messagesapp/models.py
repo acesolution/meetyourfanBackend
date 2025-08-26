@@ -42,8 +42,16 @@ class Message(models.Model):
         default='sent'
     )
     
+    class Meta:
+        indexes = [
+            models.Index(fields=['conversation', 'created_at']),
+            models.Index(fields=['conversation', 'status']),
+        ]
+    
     def __str__(self):
         return f"Message from {self.sender.username}: {self.content[:30]}"
+    
+    
 
     
 class ConversationDeletion(models.Model):

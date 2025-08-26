@@ -7,7 +7,6 @@ from messagesapp.models import Conversation, Message
 from profileapp.models import BlockedUsers  # Import BlockedUsers model
 import logging
 from django.utils import timezone
-from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -231,30 +230,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             'profile': profile_data,
                             'status': status_to_emit,
                             'message_id': message.id,
+                            'created_at': message.created_at.isoformat(),
                         }
                     )
 
-                    # Get unread message IDs for the conversation
-                    unread_ids = await self.get_unread_message_ids()
+                    sender_name = getattr(getattr(self.user, "profile", None), "name", None) or self.user.username
+                    sender_avatar = None
+                    if getattr(getattr(self.user, "profile", None), "profile_picture", None):
+                        # if you need absolute URL, resolve here
+                        sender_avatar = self.user.profile.profile_picture.url
 
-                    # Broadcast a conversation update that includes unread message IDs.
-                    await self.channel_layer.group_send(
-                        "conversation_updates",  # Global group for conversation list updates
-                        {
-                            'type': 'conversation_update',
-                            'conversation_id': self.conversation_id,
-                            'last_message': {
-                                'content': content,
-                                'created_at': str(message.created_at),  # Send the created_at timestamp
-                                'id': message.id,
-                                'status': status_to_emit,
-                                'user_id': self.user.id,
-                                
+                    # send to each participant’s personal updates stream
+                    participant_ids = await self._participant_ids()
+                    for uid in participant_ids:
+                        unread_ids_for_uid = await self._unread_ids_for_user(uid)
+                        await self.channel_layer.group_send(
+                            f"user_{uid}",
+                            {
+                                "type": "conversation_update",
+                                "conversation_id": self.conversation_id,
+                                "last_message": {
+                                    "content": content,
+                                    "created_at": str(message.created_at),
+                                    "id": message.id,
+                                    "status": status_to_emit,
+                                    "user_id": self.user.id,
+                                    "sender_name": sender_name,          # <- helps your toast UI
+                                    "sender_avatar": sender_avatar,      # <- helps your toast UI
+                                },
+                                "updated_at": str(timezone.now()),
+                                "unread_ids": unread_ids_for_uid,
                             },
-                            'updated_at': str(timezone.now()),  # or use message.created_at
-                            'unread_ids': unread_ids,
-                        }
-                    )
+                        )
 
             elif event_type == 'heartbeat':
                 await self.set_presence(is_online=True)  # bumps last_seen
