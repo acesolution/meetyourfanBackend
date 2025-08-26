@@ -409,3 +409,79 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
             'updated_at': event['updated_at'],
             'unread_ids': event.get('unread_ids', []),
         }))
+
+
+
+
+# messagesapp/consumers.py  (add this class)
+class PresenceConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        self.user = self.scope["user"]
+        if not self.user.is_authenticated:
+            await self.close()
+            return
+        await self.accept()
+        await self._set_presence(True)
+
+    async def disconnect(self, code):
+        await self._set_presence(False)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        try:
+            data = json.loads(text_data or "{}")
+        except Exception:
+            data = {}
+
+        t = data.get("type")
+        if t == "heartbeat" or t == "online":
+            await self._set_presence(True)
+        elif t == "mark_delivered_all":
+            # Flip all "sent" messages to "delivered" for this user
+            conv_to_ids = await self._mark_all_unseen_as_delivered_for_user()
+            # Optionally notify live conversation groups so senders see ✓✓
+            for conv_id, ids in conv_to_ids.items():
+                if not ids:
+                    continue
+                await self.channel_layer.group_send(
+                    f"conversation_{conv_id}",
+                    {
+                        "type": "delivered_receipt",
+                        "message_ids": ids,
+                        "user_id": self.user.id,
+                    },
+                )
+
+    @sync_to_async
+    def _set_presence(self, is_online: bool):
+        if hasattr(self.user, "profile") and self.user.profile:
+            p = self.user.profile
+            p.is_online = is_online
+            p.last_seen = timezone.now()
+            p.save(update_fields=["is_online", "last_seen"])
+
+    @sync_to_async
+    def _mark_all_unseen_as_delivered_for_user(self):
+        """
+        Find all messages with status='sent' in conversations that include this user,
+        but not sent BY this user → set to 'delivered'.
+        Returns {conversation_id: [message_ids...]} for broadcasting receipts.
+        """
+        from messagesapp.models import Message, Conversation
+        # Messages in any conversation where user participates, not authored by user, still 'sent'
+        qs = Message.objects.filter(
+            conversation__participants=self.user,
+            status="sent"
+        ).exclude(sender=self.user)
+
+        ids = list(qs.values_list("id", flat=True))
+        if not ids:
+            return {}
+
+        # Group ids by conversation for fine-grained receipts
+        rows = qs.values_list("conversation_id", "id")
+        by_conv = {}
+        for cid, mid in rows:
+            by_conv.setdefault(cid, []).append(mid)
+
+        qs.update(status="delivered")
+        return by_conv
