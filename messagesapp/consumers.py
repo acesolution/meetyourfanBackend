@@ -124,6 +124,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if ids:
             qs.update(status='delivered')
         return ids
+    
+    @sync_to_async
+    def get_recipient_ids(self):
+        conv = Conversation.objects.get(id=self.conversation_id)
+        return list(conv.participants.exclude(id=self.user.id).values_list('id', flat=True))
+
+    @sync_to_async
+    def any_recipient_online(self, recipient_ids):
+        from api.models import Profile
+        return Profile.objects.filter(user_id__in=recipient_ids, is_online=True).exists()
+
+    @sync_to_async
+    def set_message_status_delivered(self, message_id: int):
+        Message.objects.filter(id=message_id).update(status="delivered")
 
     async def receive(self, text_data):
         """Handle incoming WebSocket messages."""
@@ -192,6 +206,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if content:
                     message = await self.save_message(content)
                     
+                    # who are the recipients (everyone in the conversation except me)?
+                    recipient_ids = await self.get_recipient_ids()
+                     # if any recipient is online, flip to delivered immediately
+                    is_any_online = await self.any_recipient_online(recipient_ids)
+                    status_to_emit = "sent"
+                    if is_any_online:
+                        await self.set_message_status_delivered(message.id)
+                        status_to_emit = "delivered"
+
+                    
                     # Use the helper function to get profile data
                     profile_data = await self.get_profile_data()
                     
@@ -205,7 +229,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             'user_id': self.user.id,
                             'username': self.user.username,
                             'profile': profile_data,
-                            'status': message.status,
+                            'status': status_to_emit,
                             'message_id': message.id,
                         }
                     )
@@ -223,7 +247,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 'content': content,
                                 'created_at': str(message.created_at),  # Send the created_at timestamp
                                 'id': message.id,
-                                'status': message.status,
+                                'status': status_to_emit,
                                 'user_id': self.user.id,
                                 
                             },
@@ -381,6 +405,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'updated_at': event['updated_at'],
             'unread_ids': event.get('unread_ids', []),
         }))
+        
+    @sync_to_async
+    def _participant_ids(self):
+        return list(Conversation.objects.get(id=self.conversation_id)
+                    .participants.values_list('id', flat=True))
+
+    @sync_to_async
+    def _unread_ids_for_user(self, uid: int):
+        return list(Message.objects
+            .filter(conversation_id=self.conversation_id, status__in=["sent","delivered"])
+            .exclude(sender_id=uid).values_list("id", flat=True))
 
 
 class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
@@ -392,13 +427,12 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
         
-        # Join the global updates group.
-        await self.channel_layer.group_add("conversation_updates", self.channel_name)
+        self.group = f"user_{self.user.id}"
+        await self.channel_layer.group_add(self.group, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
-        """Remove the connection from the global updates group."""
-        await self.channel_layer.group_discard("conversation_updates", self.channel_name)
+        await self.channel_layer.group_discard(self.group, self.channel_name)
 
     async def conversation_update(self, event):
         """Send the conversation update to the client."""
