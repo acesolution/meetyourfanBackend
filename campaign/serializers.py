@@ -13,6 +13,7 @@ from .utils import generate_presigned_s3_url
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.urls import reverse
 from django.conf import settings
+from django.db.models import Sum
 
 signer = TimestampSigner(salt=getattr(settings, "MEDIA_TOKEN_SALT", "media-access"))
 
@@ -138,7 +139,7 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
 
             total_tickets_sold = sum(
                 (p.tickets_purchased or 0)
-                for p in instance.participations.all()
+                for p in instance.participations.all(is_free_entry=False)
             )
             representation['total_tickets_sold'] = total_tickets_sold
 
@@ -185,12 +186,12 @@ class MediaFileSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
     preview_url = serializers.SerializerMethodField()
     has_access = serializers.SerializerMethodField()
-    campaign_id     = serializers.IntegerField(source="media_file.campaign.id", read_only=True)
-    campaign_title  = serializers.CharField(source="media_file.campaign.title", read_only=True)
+    campaign_id     = serializers.IntegerField(source="campaign.id", read_only=True)
+    campaign_title  = serializers.CharField(source="campaign.title", read_only=True)
 
     class Meta:
         model = MediaFile
-        fields = ['id', 'preview_url', 'file_url', 'has_access', "content_type", "campaign_id", "campaign_title", "content_type"]
+        fields = ['id', 'preview_url', 'file_url', 'has_access', "campaign_id", "campaign_title", "content_type"]
 
     def get_has_access(self, obj):
         user = self.context.get('request').user
@@ -342,15 +343,17 @@ class ParticipationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("You must purchase at least one ticket.")
 
             # Check overall ticket availability
-            total_tickets_sold = sum(p.tickets_purchased for p in campaign.participations.all())
+            total_tickets_sold = campaign.participations.aggregate(
+                total=Sum('tickets_purchased')
+            )['total'] or 0
             tickets_remaining = campaign.total_tickets - total_tickets_sold
             if tickets_requested > tickets_remaining:
                 raise serializers.ValidationError(f"Only {tickets_remaining} tickets are available.")
 
             # Ensure per-fan ticket limit is respected.
-            fan_tickets_purchased = sum(
-                p.tickets_purchased for p in campaign.participations.filter(fan=fan)
-            )
+            fan_tickets_purchased = campaign.participations.filter(fan=fan).aggregate(
+                total=Sum('tickets_purchased')
+            )['total'] or 0
             max_tickets_allowed = campaign.ticket_limit_per_fan
             if max_tickets_allowed and fan_tickets_purchased + tickets_requested > max_tickets_allowed:
                 remaining_tickets = max_tickets_allowed - fan_tickets_purchased
@@ -368,16 +371,18 @@ class ParticipationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("You must purchase at least one media file.")
 
             # Check overall media availability.
-            total_media_sold = sum(p.media_purchased for p in campaign.participations.all() if p.media_purchased)
+            total_media_sold = campaign.participations.aggregate(
+                total=Sum('media_purchased')
+            )['total'] or 0
             media_remaining = campaign.total_media - total_media_sold
             if media_requested > media_remaining:
                 raise serializers.ValidationError(f"Only {media_remaining} media files are available.")
 
             # If a per-fan limit is set (using ticket_limit_per_fan for media selling), enforce it.
             if campaign.ticket_limit_per_fan:
-                fan_media_purchased = sum(
-                    p.media_purchased for p in campaign.participations.filter(fan=fan) if p.media_purchased
-                )
+                fan_media_purchased = campaign.participations.filter(fan=fan).aggregate(
+                    total=Sum('media_purchased')
+                )['total'] or 0
                 if fan_media_purchased + media_requested > campaign.ticket_limit_per_fan:
                     remaining_media = campaign.ticket_limit_per_fan - fan_media_purchased
                     raise serializers.ValidationError(
@@ -539,14 +544,15 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
 
     # Calculate total tickets sold for ticket or meet & greet campaigns.
     def get_total_tickets_sold(self, obj):
-        if obj.campaign_type == 'media_selling':
-            return sum((p.media_purchased or 0) for p in obj.participations.all())
+        if obj.campaign_type in ('ticket', 'meet_greet'):
+            # keep consistency with other places: count paid entries only
+            return sum((p.tickets_purchased or 0) for p in obj.participations.filter(is_free_entry=False))
         return 0
 
     # Calculate total media sold for media selling campaigns.
     def get_total_media_sold(self, obj):
         if obj.campaign_type == 'media_selling':
-            return sum(p.media_purchased or 0 for p in obj.participations.all())
+            return sum(p.media_purchased or 0 for p in obj.participations.filter(is_free_entry=False))
         return 
     
     def get_winners_count(self, obj):

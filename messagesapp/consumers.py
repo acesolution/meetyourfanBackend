@@ -316,6 +316,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'profile': event.get('profile'),
             'message': event['message'],
             'status': event.get('status', 'sent'),  # default to 'sent' if not provided
+            'created_at': event.get('created_at'),
         }))
 
 
@@ -358,6 +359,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 content=content
                 # The status field will be set to its default ("sent")
             )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=['updated_at'])
             logger.info(f"Message saved: {content} by {self.user.username}")
             return message
         except Conversation.DoesNotExist:
@@ -479,10 +482,14 @@ class PresenceConsumer(AsyncWebsocketConsumer):
         elif t == "mark_delivered_all":
             # Flip all "sent" messages to "delivered" for this user
             conv_to_ids = await self._mark_all_unseen_as_delivered_for_user()
+            
+            
             # Optionally notify live conversation groups so senders see ✓✓
             for conv_id, ids in conv_to_ids.items():
                 if not ids:
                     continue
+                
+                # delivered ticks for any open chat tabs
                 await self.channel_layer.group_send(
                     f"conversation_{conv_id}",
                     {
@@ -491,6 +498,25 @@ class PresenceConsumer(AsyncWebsocketConsumer):
                         "user_id": self.user.id,
                     },
                 )
+                
+                # compute unread_ids for this user in that conversation
+                unread_ids = await self._unread_ids_for_self(conv_id)
+                await self.channel_layer.group_send(
+                    f"conversation_{conv_id}",
+                    {
+                        "type": "delivered_receipt",
+                        "message_ids": ids,
+                        "user_id": self.user.id,
+                        "unread_ids": unread_ids,
+                    },
+                )
+                
+    @sync_to_async
+    def _unread_ids_for_self(self, conv_id: int):
+        return list(Message.objects
+            .filter(conversation_id=conv_id, status__in=["sent","delivered"])
+            .exclude(sender_id=self.user.id)
+            .values_list("id", flat=True))
 
     @sync_to_async
     def _set_presence(self, is_online: bool):
