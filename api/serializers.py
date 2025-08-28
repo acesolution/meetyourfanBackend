@@ -242,9 +242,7 @@ class FanSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'phone_number', 'user_type',
             'profile', 'verification_code', 'campaigns_joined', 'campaigns_won',
             'following_count', 'followers_count', 'is_following', 'is_followed',
-            'has_pending_follow_request', 'social_media', 'own_profile'
-
-            # Include the new fields here
+            'has_pending_follow_request', 'social_media', 'own_profile',
             'total_campaigns_joined',
             'total_campaigns_won',
             'total_likes',
