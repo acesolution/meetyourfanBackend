@@ -139,7 +139,7 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
 
             total_tickets_sold = sum(
                 (p.tickets_purchased or 0)
-                for p in instance.participations.all(is_free_entry=False)
+                for p in instance.participations.filter(is_free_entry=False)
             )
             representation['total_tickets_sold'] = total_tickets_sold
 
@@ -343,7 +343,7 @@ class ParticipationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("You must purchase at least one ticket.")
 
             # Check overall ticket availability
-            total_tickets_sold = campaign.participations.aggregate(
+            total_tickets_sold = campaign.participations.filter(is_free_entry=False).aggregate(
                 total=Sum('tickets_purchased')
             )['total'] or 0
             tickets_remaining = campaign.total_tickets - total_tickets_sold
@@ -371,7 +371,7 @@ class ParticipationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("You must purchase at least one media file.")
 
             # Check overall media availability.
-            total_media_sold = campaign.participations.aggregate(
+            total_media_sold = campaign.participations.filter(is_free_entry=False).aggregate(
                 total=Sum('media_purchased')
             )['total'] or 0
             media_remaining = campaign.total_media - total_media_sold
@@ -552,7 +552,7 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
     # Calculate total media sold for media selling campaigns.
     def get_total_media_sold(self, obj):
         if obj.campaign_type == 'media_selling':
-            return sum(p.media_purchased or 0 for p in obj.participations.filter(is_free_entry=False))
+            return sum((p.media_purchased or 0) for p in obj.participations.filter(is_free_entry=False))
         return 
     
     def get_winners_count(self, obj):
