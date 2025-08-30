@@ -50,6 +50,8 @@ class Profile(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='public')  # New field
     last_seen = models.DateTimeField(null=True, blank=True)
     is_online = models.BooleanField(default=False)
+    cover_focal_x = models.FloatField(default=50)  # 0..100
+    cover_focal_y = models.FloatField(default=50)  # 0..100
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

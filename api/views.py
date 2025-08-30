@@ -1099,3 +1099,18 @@ class GuestCampaignPurchaseView(APIView):
                 {"error": "Server error", "details": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+class CoverFocalUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        prof = request.user.profile
+        fx = float(request.data.get('cover_focal_x', prof.cover_focal_x))
+        fy = float(request.data.get('cover_focal_y', prof.cover_focal_y))
+        prof.cover_focal_x = max(0.0, min(100.0, fx))
+        prof.cover_focal_y = max(0.0, min(100.0, fy))
+        prof.save(update_fields=['cover_focal_x', 'cover_focal_y'])
+        return Response(
+            {'cover_focal_x': prof.cover_focal_x, 'cover_focal_y': prof.cover_focal_y},
+            status=status.HTTP_200_OK
+        )
