@@ -8,6 +8,7 @@ from django.utils import timezone
 from .utils import generate_presigned_s3_url
 from blockchain.tasks import release_all_holds_for_campaign_task
 import mimetypes
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 class Campaign(models.Model):
     
@@ -39,6 +40,16 @@ class Campaign(models.Model):
     )
     title = models.CharField(max_length=200)
     banner_image = models.ImageField(upload_to='media/public/campaign_banners/')
+    banner_focal_x = models.FloatField(
+        default=50,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Horizontal focal point in percent (0..100)",
+    )
+    banner_focal_y = models.FloatField(
+        default=50,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Vertical focal point in percent (0..100)",
+    )
     campaign_type = models.CharField(max_length=20, choices=CAMPAIGN_TYPE_CHOICES)
     deadline = models.DateTimeField()
     details = models.TextField()
