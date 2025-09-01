@@ -455,15 +455,16 @@ class InfluencerCampaignSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        if instance.campaign_type == 'ticket':
-            ticket_instance = instance.specific_campaign()  # Returns the TicketCampaign object
-            representation['ticket_cost'] = ticket_instance.ticket_cost
-            representation['total_tickets'] = ticket_instance.total_tickets
+        if instance.campaign_type in ('ticket', 'meet_greet'):
+            child = instance.specific_campaign()
+            representation['ticket_cost'] = child.ticket_cost
+            representation['total_tickets'] = child.total_tickets
         elif instance.campaign_type == 'media_selling':
-            media_instance = instance.specific_campaign()  # Returns the MediaSellingCampaign object
-            representation['media_cost'] = media_instance.media_cost
-            representation['total_media'] = media_instance.total_media
+            child = instance.specific_campaign()
+            representation['media_cost'] = child.media_cost
+            representation['total_media'] = child.total_media
         return representation
+
 
 class CampaignWinnerSerializer(serializers.ModelSerializer):
     fan = UserCampaignSerializer(read_only=True)
