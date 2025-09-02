@@ -13,13 +13,12 @@ from .views import (
     CampaignDetailView,
     LikeCampaignView,
     InfluencerWinnersView,
-    DashboardView,
-    CampaignDashboardDetailView,
     FanAnalyticsView,
     CampaignUserMediaAccessListView,
     MediaDisplayView,  # Add this import if not present
     AutoParticipateConfirmView,
-    MyMediaFilesView
+    MyMediaFilesView,
+    UnifiedEngagementView
 
 )
 
@@ -38,8 +37,8 @@ urlpatterns = [
     path('campaign/<int:campaign_id>/', CampaignDetailView.as_view(), name='campaign-detail'),
     path('like/<int:campaign_id>/', LikeCampaignView.as_view(), name='campaign-like'),
     path('influencer/<int:influencer_id>/winners/', InfluencerWinnersView.as_view(), name='influencer-winners'),
-    path('dashboard/', DashboardView.as_view(), name='dashboard'),
-    path('dashboard/campaign/<int:campaign_id>/', CampaignDashboardDetailView.as_view(), name='campaign-dashboard-detail'),
+    path('dashboard/engagement/', UnifiedEngagementView.as_view(), name='engagement'),
+    path('dashboard/engagement/<int:campaign_id>/', UnifiedEngagementView.as_view(), name='engagement-detail'),
     path('fan/analytics/', FanAnalyticsView.as_view(), name='fan-analytics'),
     path('view/<int:campaign_id>/media-access/', CampaignUserMediaAccessListView.as_view(), name='media-access'),
     path('media-display/<int:media_id>/', MediaDisplayView.as_view(), name='media-display'),

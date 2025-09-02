@@ -80,7 +80,10 @@ from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from django.utils import timezone as dj_timezone
 from web3.exceptions import TransactionNotFound
-
+from django.db.models.functions import TruncDate, Coalesce  # built-in: SQL DATE() & COALESCE(NULL, fallback)
+from django.db.models import Sum, Count, Q, Value, IntegerField  # built-in: aggregations & query helpers
+from decimal import Decimal
+from datetime import timedelta
 
 User = get_user_model()
 
@@ -109,82 +112,6 @@ def wait_for_tx_receipt(
             raise TimeoutError(f"Timed out waiting for tx {tx_hash}")
 
         time.sleep(poll_interval)
-
-
-class DashboardView(APIView):
-    """
-    Returns dashboard data for the authenticated influencer:
-      - Active campaigns
-      - Total earning (sum of participation amounts)
-      - Total participation count
-      - Total tickets purchased (for ticket and meet_greet campaigns)
-      - Total winners across all campaigns
-      - Placeholder for performance data (for graph)
-    """
-
-    def get(self, request):
-        # Check that the user is an influencer
-        if request.user.user_type != "influencer":
-            return Response(
-                {"error": "Only influencers can access the dashboard."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        now_time = dj_timezone.now()
-
-        # Active campaigns: campaigns that are not closed and whose deadline is in the future.
-        active_campaigns_qs = Campaign.objects.filter(
-            user=request.user, is_closed=False, deadline__gte=now_time
-        )
-        active_campaigns_count = active_campaigns_qs.count()
-
-        # Total earning: Sum of amounts from participations for all campaigns created by the influencer.
-        earning_agg = Participation.objects.filter(
-            campaign__user=request.user
-        ).aggregate(total_earning=Sum("amount"))
-        total_earning = earning_agg["total_earning"] or 0
-
-        # Total participation count: Total number of participation records
-        total_participants = Participation.objects.filter(
-            campaign__user=request.user
-        ).count()
-
-        # Total tickets purchased (for ticket or meet_greet campaigns)
-        tickets_agg = Participation.objects.filter(
-            campaign__user=request.user,
-            campaign__campaign_type__in=["ticket", "meet_greet"],
-        ).aggregate(total_tickets=Sum("tickets_purchased"))
-        total_tickets = tickets_agg["total_tickets"] or 0
-
-        # Total campaigns: all campaigns created by the influencer.
-        total_campaigns = Campaign.objects.filter(user=request.user).count()
-
-        # Total winners count: Count of winners across campaigns created by the influencer.
-        total_winners = CampaignWinner.objects.filter(
-            campaign__user=request.user
-        ).count()
-
-        # Total likes: Aggregate the count of likes across all campaigns created by the influencer.
-        likes_agg = Campaign.objects.filter(user=request.user).aggregate(
-            total_likes=Count("likes")
-        )
-        total_likes = likes_agg.get("total_likes") or 0
-
-        # Placeholder for performance data (e.g., campaign performance graph).
-        performance_data = {}  # You can add your logic here later.
-
-        data = {
-            "total_active_campaigns": active_campaigns_count,
-            "total_campaigns": total_campaigns,
-            "total_earning": total_earning,
-            "total_likes": total_likes,
-            "total_participants": total_participants,
-            "total_tickets": total_tickets,
-            "total_winners": total_winners,
-            "performance_data": performance_data,
-        }
-        return Response(data, status=status.HTTP_200_OK)
-
 
 class FanAnalyticsView(APIView):
     """
@@ -249,72 +176,209 @@ class FanAnalyticsView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
+class UnifiedEngagementView(APIView):
+    """
+    GET /campaign/dashboard/engagement/?days=30[&campaign_id=123]
+    OR
+    GET /campaign/dashboard/engagement/<campaign_id>/?days=30
 
-class CampaignDashboardDetailView(APIView):
+    - If campaign_id is present → returns that campaign's engagement (owner-guarded)
+    - Else → aggregates across *all* campaigns owned by the authenticated influencer
+    """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, campaign_id):
-        # 1) Ensure the authenticated user owns this campaign
-        try:
-            campaign = Campaign.objects.get(id=campaign_id, user=request.user)
-        except Campaign.DoesNotExist:
-            return Response(
-                {"error": "Campaign not found or you are not the owner."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+    def get(self, request, campaign_id=None):
+        # ── AuthZ: Only influencers can access ────────────────────────────────
+        user = request.user
+        if getattr(user, "user_type", None) != "influencer":
+            return Response({"error": "Only influencers can access engagement."}, status=status.HTTP_403_FORBIDDEN)
 
-        # 2) Distinct participant count
-        total_participants = (
-            campaign.participations.values("fan")  # group by fan
-            .distinct()  # remove duplicates
-            .count()
+        # built-in: .get() reads query param safely; int() converts text → number
+        q_campaign_id = request.query_params.get("campaign_id")
+        if campaign_id is None and q_campaign_id:
+            try:
+                campaign_id = int(q_campaign_id)
+            except ValueError:
+                return Response({"error": "Invalid campaign_id."}, status=400)
+
+        # built-in clamp for days: ensure reasonable range
+        try:
+            days = int(request.query_params.get("days", 30))
+        except ValueError:
+            days = 30
+        days = max(1, min(days, 365))
+
+        now_ts = dj_timezone.now()
+        start_ts = now_ts - timedelta(days=days - 1)
+
+        # Scope selection
+        scope = "influencer"
+        base_campaigns = Campaign.objects.filter(user=user)
+        if campaign_id is not None:
+            # owner check for single campaign
+            try:
+                campaign = base_campaigns.get(id=campaign_id)
+            except Campaign.DoesNotExist:
+                return Response({"error": "Campaign not found or you are not the owner."}, status=404)
+            qs_part = Participation.objects.filter(campaign=campaign)
+            scope = "campaign"
+        else:
+            campaign = None
+            qs_part = Participation.objects.filter(campaign__user=user)
+
+        # ── Totals (paid entries vs free) ─────────────────────────────────────
+        # built-in: Coalesce(Sum(...), 0) → if NULL then 0
+        paid_tickets = qs_part.aggregate(v=Coalesce(Sum("tickets_purchased", filter=Q(is_free_entry=False)), 0))["v"] or 0
+        paid_media   = qs_part.aggregate(v=Coalesce(Sum("media_purchased",  filter=Q(is_free_entry=False)), 0))["v"] or 0
+        total_entries_paid = int(paid_tickets) + int(paid_media)
+
+        free_tickets = qs_part.aggregate(v=Coalesce(Sum("tickets_purchased", filter=Q(is_free_entry=True)), 0))["v"] or 0
+        free_media   = qs_part.aggregate(v=Coalesce(Sum("media_purchased",  filter=Q(is_free_entry=True)), 0))["v"] or 0
+        free_entries_count = int(free_tickets) + int(free_media)
+
+        # built-in: Sum('amount') → total revenue; free entries have amount=0 anyway
+        total_earning = qs_part.aggregate(v=Coalesce(Sum("amount"), Decimal("0")))["v"] or Decimal("0")
+
+        # built-in: COUNT(DISTINCT fan)
+        total_participants = qs_part.values("fan").distinct().count()
+
+        # Likes + winners + goals
+        if scope == "campaign":
+            total_likes = campaign.likes.count()  # built-in: M2M count
+            winners_count = campaign.winners.count()
+
+            # entries_left = goal - paid
+            specific = campaign.specific_campaign()
+            if campaign.campaign_type == "media_selling":
+                goal_total = getattr(specific, "total_media", 0) or 0
+            else:
+                goal_total = getattr(specific, "total_tickets", 0) or 0
+        else:
+            # built-in: aggregate likes across all campaigns of user
+            total_likes = base_campaigns.aggregate(v=Coalesce(Count("likes"), 0))["v"] or 0
+            winners_count = CampaignWinner.objects.filter(campaign__user=user).count()
+            # goals across all owned campaigns
+            ticket_goal = TicketCampaign.objects.filter(user=user).aggregate(v=Coalesce(Sum("total_tickets"), 0))["v"] or 0
+            media_goal  = MediaSellingCampaign.objects.filter(user=user).aggregate(v=Coalesce(Sum("total_media"), 0))["v"] or 0
+            goal_total  = int(ticket_goal) + int(media_goal)
+
+        entries_left = max(0, int(goal_total) - total_entries_paid)  # built-in: max(a,b)
+
+        # On-hold (sum Escrow held)
+        escrow_qs = EscrowRecord.objects.filter(status="held")
+        escrow_qs = escrow_qs.filter(campaign=campaign) if scope == "campaign" else escrow_qs.filter(campaign__user=user)
+        escrow_agg = escrow_qs.aggregate(
+            credits_on_hold=Coalesce(Sum("credit_amount"), 0),
+            tt_on_hold=Coalesce(Sum("tt_amount"), 0),
+        )
+        credits_on_hold = int(escrow_agg["credits_on_hold"] or 0)
+        tt_on_hold = int(escrow_agg["tt_on_hold"] or 0)
+
+        # ── Time series (daily) ───────────────────────────────────────────────
+        per_day = (
+            qs_part.filter(created_at__date__gte=start_ts.date())
+            .annotate(day=TruncDate("created_at"))                 # built-in: DATE(created_at)
+            .values("day")                                         # built-in: GROUP BY day
+            .annotate(
+                entries_tickets=Coalesce(Sum("tickets_purchased", filter=Q(is_free_entry=False)), 0),
+                entries_media=Coalesce(Sum("media_purchased",  filter=Q(is_free_entry=False)), 0),
+                revenue=Coalesce(Sum("amount",                  filter=Q(is_free_entry=False)), Decimal("0")),
+                participants=Count("fan", filter=Q(is_free_entry=False), distinct=True),
+            )
+            .order_by("day")
         )
 
-        # 3) Total earnings
-        agg = campaign.participations.aggregate(total_earning=Sum("amount"))
-        total_earning = agg["total_earning"] or 0
+        # build fixed buckets [start..today] so charts don’t have gaps
+        day_index = {row["day"]: row for row in per_day}
+        buckets, entries_series, revenue_series, participants_series = [], [], [], []
+        for i in range(days):
+            d = (start_ts + timedelta(days=i)).date()
+            buckets.append(d.isoformat())
+            row = day_index.get(d)
+            if row:
+                entries_series.append(int(row["entries_tickets"] or 0) + int(row["entries_media"] or 0))
+                revenue_series.append(float(row["revenue"] or 0))
+                participants_series.append(int(row["participants"] or 0))
+            else:
+                entries_series.append(0)
+                revenue_series.append(0.0)
+                participants_series.append(0)
 
-        # 4) Total likes
-        total_likes = campaign.likes.count()
-
-        # 5) Total tickets sold (if applicable)
-        total_tickets = 0
-        if campaign.campaign_type in ["ticket", "meet_greet"]:
-            agg = campaign.participations.aggregate(
-                total_tickets=Sum("tickets_purchased")
+        # ── Breakdowns (optional for UI) ──────────────────────────────────────
+        payment_methods = list(
+            qs_part.values("payment_method")
+            .annotate(
+                count=Count("id"),                                  # built-in: COUNT(*)
+                amount=Coalesce(Sum("amount"), Decimal("0")),
             )
-            total_tickets = agg["total_tickets"] or 0
+            .order_by("-count")
+        )
+        for pm in payment_methods:
+            pm["amount"] = float(pm["amount"] or 0)
 
-        # 6) On-chain held amounts
-        try:
-            # note: both mappings use string campaignId
-            tt_on_hold = contract.functions.totalHeldTT(str(campaign.id)).call(
-                {"from": OWNER}
+        # Top participants by entries
+        top_raw = (
+            qs_part.filter(is_free_entry=False)
+            .values("fan")
+            .annotate(
+                t=Coalesce(Sum("tickets_purchased"), 0),
+                m=Coalesce(Sum("media_purchased"), 0),
+                amount=Coalesce(Sum("amount"), Decimal("0")),
             )
-            credits_on_hold = contract.functions.totalHeldCredits(
-                str(campaign.id)
-            ).call({"from": OWNER})
-        except Exception:
-            logger.exception(
-                "Failed to fetch on-chain hold for campaign %s", campaign.id
-            )
-            tt_on_hold = 0
-            credits_on_hold = 0
+            .order_by("-t", "-m")[:5]
+        )
+        top_participants = []
+        for row in top_raw:
+            try:
+                u = User.objects.get(pk=row["fan"])
+            except User.DoesNotExist:
+                continue
+            user_data = UserCampaignSerializer(u, context={"request": request}).data
+            user_data["profile"] = ProfileCampaignSerializer(u.profile, context={"request": request}).data
+            top_participants.append({
+                "user": user_data,
+                "entries": int(row["t"] or 0) + int(row["m"] or 0),
+                "amount": float(row["amount"] or 0),
+            })
 
-        # 7) Build response
+        # ── Response (shape compatible with your front-end) ───────────────────
         data = {
-            "campaign_id": campaign.id,
-            "title": campaign.title,
-            "total_participants": total_participants,
-            "total_earning": total_earning,
-            "total_likes": total_likes,
-            "total_tickets_sold": total_tickets,
-            "tt_on_hold": tt_on_hold,
-            "credits_on_hold": credits_on_hold,
-            "is_closed": campaign.is_closed,
-        }
+            "scope": scope,                         # "campaign" | "influencer"
+            "campaign_id": campaign.id if campaign else None,
+            "title": campaign.title if campaign else "All Campaigns",
+            "campaign_type": campaign.campaign_type if campaign else "mixed",
+            "deadline": campaign.deadline if campaign else None,
+            "is_closed": campaign.is_closed if campaign else False,
 
-        return Response(data, status=status.HTTP_200_OK)
+            # cards
+            "total_participants": total_participants,
+            "total_likes": total_likes,
+            "total_tickets_sold": total_entries_paid,   # kept for UI label
+            "total_entries_sold": total_entries_paid,   # unified alias
+            "total_earning": float(total_earning),
+            "credits_on_hold": credits_on_hold,
+            "tt_on_hold": tt_on_hold,
+            "entries_left": entries_left,
+            "winners_count": winners_count,
+            "total_participations": qs_part.count(),    # built-in: COUNT(*)
+            "free_entries_count": free_entries_count,
+            "paid_entries_count": total_entries_paid,
+
+            # charts
+            "series": {
+                "buckets": buckets,
+                "entries": entries_series,
+                "revenue": revenue_series,
+                "participants": participants_series,
+            },
+
+            # breakdowns
+            "breakdown": {
+                "payment_methods": payment_methods,
+                "top_participants": top_participants,
+            },
+        }
+        return Response(data, status=200)
 
 
 class CreateCampaignView(APIView):
