@@ -38,7 +38,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction as db_transaction
 from django.db.models import Sum, Case, When, F, DecimalField, Value, Max, Count
 from django.db.models.functions import Coalesce, Abs
-
+from celery import chain
 
 logger = logging.getLogger(__name__)
 
@@ -255,19 +255,18 @@ class WithdrawView(APIView):
         if verify_type == "phone" and not vc.withdraw_phone_verified:
             return Response({"error": "Phone not verified."},
                             status=status.HTTP_400_BAD_REQUEST)
-
-        # 3) enqueue the on‐chain withdraw
-        task = withdraw_for_user_task.delay(user_id, credits)
-        amount = credits / get_current_rate_wei()  # convert credits back to TT units
-        
-        # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately
-        save_transaction_info.delay(
-            request.user.id,       # user_id FK
-            None,                  # campaign_id
-            Transaction.WITHDRAW,   # 'WITHDRAW'
-            int(amount),           # tt_amount
-            int(credits),           # credits_delta
-        )
+            
+        amount = credits // get_current_rate_wei()
+        res = chain(
+            withdraw_for_user_task.s(user_id, credits),
+            save_transaction_info.s(
+                request.user.id,        # user_id (pos 2)
+                None,                   # campaign_id
+                Transaction.WITHDRAW,   # tx_type
+                int(amount),            # tt_amount (wei)
+                -int(credits),       # credits_delta (burn is negative)
+            ),
+        ).apply_async()
 
         # 4) clear the one-time OTP flags so it can’t be reused
         vc.withdraw_email_verified = vc.withdraw_phone_verified = False
@@ -317,7 +316,16 @@ class WithdrawVerifyRequestCodeView(APIView):
             verification.save()
 
             # send email
-            html_msg = render_to_string("verify_email.html", {"verification_code": code})
+            html_msg = render_to_string(
+                "verify_email.html",
+                {
+                    "verification_code": code,
+                    "title":  "Confirm Your Withdrawal",
+                    "intro":  "Enter the 6-digit code below to confirm your withdrawal request.",
+                    "footer": "If you didn’t request a withdrawal, please ignore this email.",
+                    "expiry_minutes": 10,  # built-in int -> template filter default will accept it
+                },
+            )
             send_mail(
                 subject="Your Withdrawal Verification Code",
                 message=f"Your code is: {code}",
