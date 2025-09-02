@@ -258,6 +258,16 @@ class WithdrawView(APIView):
 
         # 3) enqueue the on‐chain withdraw
         task = withdraw_for_user_task.delay(user_id, credits)
+        amount = credits / get_current_rate_wei()  # convert credits back to TT units
+        
+        # built‑in: .delay() is Celery’s shortcut to enqueue an async task immediately
+        save_transaction_info.delay(
+            request.user.id,       # user_id FK
+            None,                  # campaign_id
+            Transaction.WITHDRAW,   # 'WITHDRAW'
+            int(amount),           # tt_amount
+            int(credits),           # credits_delta
+        )
 
         # 4) clear the one-time OTP flags so it can’t be reused
         vc.withdraw_email_verified = vc.withdraw_phone_verified = False

@@ -153,7 +153,7 @@ def save_influencer_transaction_info(
         tx_hash=tx_hash,
         **safe_details,
         influencer_id=influencer_id,
-        transaction_type=transaction_type,
+        tx_type=transaction_type,
         tt_amount=tt_amount,
         credits_delta=credits_delta,
     )
