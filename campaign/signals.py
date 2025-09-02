@@ -55,7 +55,11 @@ def push_notification(actor, recipient, verb, target):
                 "id": notification.id,
                 "actor": actor_data,  # Now includes full profile data
                 "verb": notification.verb,
-                "target": str(target),  # Customize as needed (e.g., campaign title or message preview)
+                "target": (
+                {"type": "campaign", "campaign_id": target.id, "title": getattr(target, "title", None)}
+                    if hasattr(target, "id") else
+                    {"type": "text", "text": str(target)}
+                ),
                 "created_at": notification.created_at.isoformat(),
                 "read": notification.read,
             }
