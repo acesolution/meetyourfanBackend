@@ -7,7 +7,7 @@ from rest_framework import status
 from messagesapp.models import Conversation, Message, ConversationDeletion
 from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer
 from django.contrib.auth import get_user_model
-from campaign.models import Campaign, Participation
+from campaign.models import Campaign, Participation, CampaignWinner
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import serializers
@@ -24,7 +24,13 @@ class ConversationListView(APIView):
 
     def get(self, request):
         # Get all conversations that include the current user.
-        conversations = Conversation.objects.filter(participants=request.user).order_by('-updated_at')
+        conversations = (
+            Conversation.objects
+            .filter(participants=request.user)
+            .select_related('campaign', 'campaign__user')
+            .prefetch_related('participants__profile')
+            .order_by('-updated_at')
+        )
         restored_conversations = []
         for conv in conversations:
             deletion = conv.deletions.filter(user=request.user).first()
@@ -45,76 +51,86 @@ class CreateConversationView(APIView):
 
     def post(self, request):
         user = request.user
-        participants_ids = request.data.get("participants")
+        participants_ids = request.data.get("participants") or []
 
-        if not participants_ids:
+        if not isinstance(participants_ids, list) or len(participants_ids) == 0:
             return Response({"error": "Participants are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            participants = list(User.objects.filter(id__in=participants_ids))
+        # Dedup & fetch
+        participants = list(User.objects.filter(id__in=set(participants_ids)))
 
-            if not participants:
-                return Response({"error": "Invalid participants."}, status=status.HTTP_400_BAD_REQUEST)
+        if not participants:
+            return Response({"error": "Invalid participants."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Prevent blocked users from being added
-            for participant in participants:
-                if BlockedUsers.objects.filter(blocker=user, blocked=participant).exists():
-                    return Response({'error': f'You have blocked {participant.username}.'}, status=status.HTTP_403_FORBIDDEN)
-                if BlockedUsers.objects.filter(blocker=participant, blocked=user).exists():
-                    return Response({'error': f'{participant.username} has blocked you.'}, status=status.HTTP_403_FORBIDDEN)
+        # Block checks
+        for participant in participants:
+            if BlockedUsers.objects.filter(blocker=user, blocked=participant).exists():
+                return Response({'error': f'You have blocked {participant.username}.'}, status=status.HTTP_403_FORBIDDEN)
+            if BlockedUsers.objects.filter(blocker=participant, blocked=user).exists():
+                return Response({'error': f'{participant.username} has blocked you.'}, status=status.HTTP_403_FORBIDDEN)
 
-            # Include requesting user in the participant list
-            all_participants = participants + [user]
+        all_participants = participants + [user]
 
-            # Check if a conversation already exists
-            potential_conversations = Conversation.objects.annotate(
-                participant_count=Count('participants')
-            ).filter(
-                participant_count=len(all_participants)
+        # Optional campaign attach
+        campaign = None
+        campaign_id = request.data.get("campaign_id")
+        if campaign_id:
+            campaign = Campaign.objects.filter(id=campaign_id).first()
+
+        # Decide category
+        if len(all_participants) > 2:
+            category = 'broadcast'
+        else:
+            # winner if any participant is in winners for this campaign
+            if campaign and CampaignWinner.objects.filter(
+                campaign=campaign, fan__in=participants
+            ).exists():
+                category = 'winner'
+            else:
+                category = 'other'
+
+        # Try to find an existing conversation
+        qs = Conversation.objects.annotate(participant_count=Count('participants')).filter(
+            participant_count=len(all_participants)
+        )
+
+        # For broadcasts: identity should include campaign so campaigns don't collide.
+        if category == 'broadcast':
+            qs = qs.filter(category='broadcast')
+            if campaign:
+                qs = qs.filter(campaign=campaign)
+            else:
+                qs = qs.filter(campaign__isnull=True)
+        else:
+            # For non-broadcast, allow either with or without campaign; if you prefer
+            # stricter behavior, also filter by category and campaign here.
+            qs = qs.filter(category=category)
+            if campaign:
+                qs = qs.filter(campaign=campaign)
+            else:
+                qs = qs.filter(campaign__isnull=True)
+
+        for existing in qs:
+            if set(existing.participants.all()) == set(all_participants):
+                # Found the same conversation; return it.
+                ser = ConversationSerializer(existing, context={'request': request})
+                return Response(ser.data, status=status.HTTP_200_OK)
+
+        # Create new conversation
+        conversation = Conversation.objects.create(category=category, campaign=campaign)
+        conversation.participants.set(all_participants)
+
+        if category == 'winner':
+            Message.objects.create(
+                conversation=conversation,
+                sender=user,
+                content="Congratulations on winning the campaign!"
             )
 
-            for conversation in potential_conversations:
-                if set(conversation.participants.all()) == set(all_participants):
-                    return Response({
-                        "message": "Conversation already exists.",
-                        "id": conversation.id,
-                        "category": conversation.category
-                    }, status=status.HTTP_200_OK)
-
-            # Determine conversation category
-            if len(all_participants) > 2:
-                category = 'broadcast'  # More than two participants
-            elif request.data.get("campaign_id"):  # Check for winner logic
-                campaign_id = request.data.get("campaign_id")
-                try:
-                    campaign = Campaign.objects.get(id=campaign_id)
-                    if any(Participation.objects.filter(campaign=campaign, fan=participant).exists() for participant in participants):
-                        category = 'winner'  # If any participant is a campaign winner
-                    else:
-                        category = 'other'
-                except Campaign.DoesNotExist:
-                    category = 'other'
-            else:
-                category = 'other'  # Default to 'other'
-
-            # Create a new conversation
-            conversation = Conversation.objects.create(category=category)
-            conversation.participants.set(all_participants)  # Set all participants
-
-            # Send an automated winner message if category is 'winner'
-            if category == 'winner':
-                Message.objects.create(
-                    conversation=conversation,
-                    sender=user,  # Assuming the influencer is the sender
-                    content="Congratulations on winning the campaign!"
-                )
-
-            serializer = ConversationSerializer(conversation, context={'request': request})
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
+        serializer = ConversationSerializer(conversation, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    
 class MessagePagination(PageNumberPagination):
     page_size = 30
 

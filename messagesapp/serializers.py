@@ -4,8 +4,12 @@ from rest_framework import serializers
 from messagesapp.models import Conversation, Message
 from django.contrib.auth import get_user_model
 from api.models import Profile
+from campaign.models import Campaign
 
 User = get_user_model()
+
+
+
 
 class ProfileMessagesSerializer(serializers.ModelSerializer):
     """
@@ -26,12 +30,36 @@ class UserSerializer(serializers.ModelSerializer):
         
 
 
+class CampaignBasicSerializer(serializers.ModelSerializer):
+    banner_image = serializers.SerializerMethodField()
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Campaign
+        fields = (
+            'id',
+            'title',
+            'banner_image',
+            'campaign_type',
+            'deadline',
+            'is_closed',
+            'user',
+        )
+
+    def get_banner_image(self, obj):
+        request = self.context.get("request")
+        url = obj.banner_image.url if getattr(obj.banner_image, "url", None) else None
+        return request.build_absolute_uri(url) if (request and url) else url
+
+
+
 
 class ConversationSerializer(serializers.ModelSerializer):
     participants = serializers.SerializerMethodField()
     unread_message_count = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_ids = serializers.SerializerMethodField() 
+    campaign = CampaignBasicSerializer(read_only=True)
 
     class Meta:
         model = Conversation
@@ -39,6 +67,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'id', 
             'participants', 
             'category', 
+            'campaign',
             'created_at', 
             'updated_at',
             'unread_message_count', 
@@ -87,3 +116,5 @@ class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
         fields = ['id', 'conversation', 'sender', 'content', 'status', 'created_at']
+
+
