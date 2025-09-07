@@ -15,6 +15,7 @@ from django.db.models import Count
 from profileapp.models import BlockedUsers  # Import BlockedUsers model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.db import transaction, IntegrityError 
 
 User = get_user_model()
 
@@ -46,89 +47,123 @@ class ConversationListView(APIView):
         serializer = ConversationSerializer(restored_conversations, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+def _make_signature(user_ids):
+    """
+    Create a stable signature for a set of user IDs.
+    - built-in sorted(): returns a new sorted list
+    - map/str/join: build a deterministic string "1|5|41"
+    """
+    return "|".join(str(uid) for uid in sorted(set(user_ids)))
+
 class CreateConversationView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
         participants_ids = request.data.get("participants") or []
+        campaign_id = request.data.get("campaign_id")  # optional
 
+        # Validate participant list
         if not isinstance(participants_ids, list) or len(participants_ids) == 0:
             return Response({"error": "Participants are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Dedup & fetch
+        # Deduplicate and fetch users in one query (built-in ORM filter + __in)
         participants = list(User.objects.filter(id__in=set(participants_ids)))
-
         if not participants:
             return Response({"error": "Invalid participants."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Block checks
+        # Block checks (exists() -> built-in optimized EXISTS query)
         for participant in participants:
             if BlockedUsers.objects.filter(blocker=user, blocked=participant).exists():
                 return Response({'error': f'You have blocked {participant.username}.'}, status=status.HTTP_403_FORBIDDEN)
             if BlockedUsers.objects.filter(blocker=participant, blocked=user).exists():
                 return Response({'error': f'{participant.username} has blocked you.'}, status=status.HTTP_403_FORBIDDEN)
 
+        # Full participant set always includes the initiator
         all_participants = participants + [user]
+        signature = _make_signature([u.id for u in all_participants])
 
-        # Optional campaign attach
-        campaign = None
-        campaign_id = request.data.get("campaign_id")
-        if campaign_id:
-            campaign = Campaign.objects.filter(id=campaign_id).first()
+        # Optional campaign
+        campaign = Campaign.objects.filter(id=campaign_id).first() if campaign_id else None  # built-in first(): returns first or None
 
         # Decide category
         if len(all_participants) > 2:
             category = 'broadcast'
         else:
-            # winner if any participant is in winners for this campaign
-            if campaign and CampaignWinner.objects.filter(
-                campaign=campaign, fan__in=participants
-            ).exists():
+            # If any target is a winner for this campaign, tag as 'winner'; otherwise 'other'
+            if campaign and CampaignWinner.objects.filter(campaign=campaign, fan__in=participants).exists():
                 category = 'winner'
             else:
                 category = 'other'
 
-        # Try to find an existing conversation
-        qs = Conversation.objects.annotate(participant_count=Count('participants')).filter(
-            participant_count=len(all_participants)
-        )
-
-        # For broadcasts: identity should include campaign so campaigns don't collide.
+        # === DEDUPE LOOKUP ===
         if category == 'broadcast':
-            qs = qs.filter(category='broadcast')
-            if campaign:
-                qs = qs.filter(campaign=campaign)
-            else:
-                qs = qs.filter(campaign__isnull=True)
-        else:
-            # For non-broadcast, allow either with or without campaign; if you prefer
-            # stricter behavior, also filter by category and campaign here.
-            qs = qs.filter(category=category)
-            if campaign:
-                qs = qs.filter(campaign=campaign)
-            else:
-                qs = qs.filter(campaign__isnull=True)
-
-        for existing in qs:
-            if set(existing.participants.all()) == set(all_participants):
-                # Found the same conversation; return it.
-                ser = ConversationSerializer(existing, context={'request': request})
-                return Response(ser.data, status=status.HTTP_200_OK)
-
-        # Create new conversation
-        conversation = Conversation.objects.create(category=category, campaign=campaign)
-        conversation.participants.set(all_participants)
-
-        if category == 'winner':
-            Message.objects.create(
-                conversation=conversation,
-                sender=user,
-                content="Congratulations on winning the campaign!"
+            # Rule: dedupe by (signature, created_by=user) for broadcast
+            existing = (
+                Conversation.objects
+                .filter(category='broadcast', created_by=user, participant_signature=signature)
+                .select_related('campaign', 'created_by')
+                .prefetch_related('participants__profile')
+                .first()
             )
+        else:
+            # Rule: 1-to-1 is category-agnostic: any existing 'winner' or 'other' with same signature must be reused
+            existing = (
+                Conversation.objects
+                .filter(category__in=['winner', 'other'], participant_signature=signature)
+                .select_related('campaign', 'created_by')
+                .prefetch_related('participants__profile')
+                .first()
+            )
+
+        if existing:
+            # NOTE: If the user had "deleted" the conversation earlier, it will reappear once a new message arrives.
+            # You can also choose to clear the deletion record here for this user if you want an instant restore.
+            ser = ConversationSerializer(existing, context={'request': request})
+            return Response(ser.data, status=status.HTTP_200_OK)
+
+        # === CREATE (race-safe) ===
+        try:
+            with transaction.atomic():  # built-in: ensures all ops succeed or none
+                conversation = Conversation.objects.create(
+                    category=category,
+                    campaign=campaign,
+                    created_by=user,
+                    participant_signature=signature,
+                )  # built-in create(): inserts row and returns instance
+
+                # M2M set(): built-in that replaces relation with given iterable (bulk insert through table)
+                conversation.participants.set(all_participants)
+
+                # Optional auto-message for winners
+                if category == 'winner':
+                    Message.objects.create(
+                        conversation=conversation,
+                        sender=user,
+                        content="Congratulations on winning the campaign!"
+                    )
+
+        except IntegrityError:
+            # If two requests race to create the same conversation, unique constraints will raise.
+            # We then fetch the one that "won" the race and return it.
+            if category == 'broadcast':
+                conversation = (
+                    Conversation.objects
+                    .filter(category='broadcast', created_by=user, participant_signature=signature)
+                    .first()
+                )
+            else:
+                conversation = (
+                    Conversation.objects
+                    .filter(category__in=['winner', 'other'], participant_signature=signature)
+                    .first()
+                )
+            if conversation is None:
+                return Response({"error": "Failed to create or fetch conversation."}, status=500)
 
         serializer = ConversationSerializer(conversation, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
     
     
 class MessagePagination(PageNumberPagination):
