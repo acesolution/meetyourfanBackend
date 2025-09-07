@@ -32,7 +32,7 @@ class Conversation(models.Model):
 
     # Stable hash/signature of the full participant set (sorted IDs; see view)
     # We'll store plain signature to keep it human-readable; you can switch to sha256 if you prefer.
-    participant_signature = models.CharField(max_length=512, db_index=True)
+    participant_signature = models.CharField(max_length=512, db_index=True, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)  # built-in: auto_now_add sets on first create()
     updated_at = models.DateTimeField(auto_now=True)      # built-in: auto_now updates on each save()
