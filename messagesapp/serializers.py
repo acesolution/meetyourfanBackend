@@ -1,10 +1,11 @@
 # messagesapp/serializers.py
 
 from rest_framework import serializers
-from messagesapp.models import Conversation, Message
+from messagesapp.models import Conversation, Message, ConversationMute
 from django.contrib.auth import get_user_model
 from api.models import Profile
 from campaign.models import Campaign
+from profileapp.models import BlockedUsers
 
 User = get_user_model()
 
@@ -60,6 +61,8 @@ class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     unread_ids = serializers.SerializerMethodField() 
     campaign = CampaignBasicSerializer(read_only=True)
+    is_blocked = serializers.SerializerMethodField()     
+    muted_until = serializers.SerializerMethodField()     
 
     class Meta:
         model = Conversation
@@ -72,7 +75,9 @@ class ConversationSerializer(serializers.ModelSerializer):
             'updated_at',
             'unread_message_count', 
             'last_message', 
-            'unread_ids'  
+            'unread_ids',
+            'is_blocked',
+            'muted_until',
         )
         
     def get_unread_message_count(self, obj):
@@ -108,6 +113,32 @@ class ConversationSerializer(serializers.ModelSerializer):
                 data['sent_by_me'] = False
             return data
         return None
+    
+    
+    def get_is_blocked(self, obj):
+        """
+        True if *request.user* has blocked the peer (only meaningful for 1:1).
+        built-in queryset .exists(): SELECT 1 WHERE ... LIMIT 1
+        """
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        # For 1:1, peer = the "other" participant
+        others = obj.participants.exclude(id=request.user.id)
+        if others.count() != 1:
+            return False
+        peer = others.first()
+        return BlockedUsers.objects.filter(blocker=request.user, blocked=peer).exists()
+
+    def get_muted_until(self, obj):
+        """Return ISO string or null if not muted for this user."""
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        m = ConversationMute.objects.filter(conversation=obj, user=request.user).first()  # built-in: first()
+        if not m:
+            return None
+        return None if m.muted_until is None else m.muted_until.isoformat()
 
 
 class MessageSerializer(serializers.ModelSerializer):

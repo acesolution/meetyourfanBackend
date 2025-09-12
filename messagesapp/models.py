@@ -104,3 +104,52 @@ class ConversationDeletion(models.Model):
 
     def __str__(self):
         return f"Conversation {self.conversation.id} deleted by {self.user.username} at {self.deleted_at}"
+
+
+
+class ConversationMute(models.Model):
+    """
+    Per-user mute preference for a conversation.
+    If muted_until is None -> muted indefinitely.
+    If row absent -> not muted.
+    """
+    conversation = models.ForeignKey('Conversation', on_delete=models.CASCADE, related_name='mutes')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_mutes')
+    muted_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('conversation', 'user')  # built-in: DB-level uniqueness on pair
+        indexes = [
+            models.Index(fields=['user', 'conversation']),
+        ]
+
+    def is_active(self) -> bool:
+        # built-in timezone.now(): returns aware datetime in your TZ setting
+        if self.muted_until is None:
+            return True
+        return self.muted_until > timezone.now()
+
+
+class UserMessagesReport(models.Model):
+    """
+    Store reports raised from a 1:1 conversation.
+    """
+    REASON_CHOICES = [
+        ('inappropriate', 'Inappropriate Content'),
+        ('harassment', 'Harassment or Abuse'),
+        ('spam', 'Spam or Misleading'),
+        ('impersonation', 'Impersonation'),
+        ('ip', 'Intellectual Property Violation'),
+        ('other', 'Other'),
+    ]
+    reporter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='reports_made')
+    reported_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='reports_received')
+    conversation = models.ForeignKey('Conversation', on_delete=models.CASCADE, related_name='reports')
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    text = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)  # built-in: set on create()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['reported_user', 'created_at']),
+        ]

@@ -3,10 +3,11 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
-from messagesapp.models import Conversation, Message
+from messagesapp.models import Conversation, Message, ConversationMute
 from profileapp.models import BlockedUsers  # Import BlockedUsers model
 import logging
 from django.utils import timezone
+from django.db import models
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         )
 
             elif event_type == 'message':
+                # deny if any party blocked the other
+                @sync_to_async
+                def _is_blocked_either_way():
+                    from profileapp.models import BlockedUsers
+                    conv = Conversation.objects.get(id=self.conversation_id)
+                    # built-in values_list(): SELECT ... returns simple lists/tuples
+                    others = list(conv.participants.exclude(id=self.user.id).values_list('id', flat=True))
+                    if len(others) != 1:
+                        return False
+                    other_id = others[0]
+                    return BlockedUsers.objects.filter(
+                        models.Q(blocker_id=other_id, blocked=self.user) |
+                        models.Q(blocker=self.user, blocked_id=other_id)
+                    ).exists()
+
+                if await _is_blocked_either_way():
+                    await self.send(json.dumps({"error": "Interaction blocked."}))
+                    return
                 # Handle chat message
                 content = data.get('content')
                 if content:
@@ -244,6 +263,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     participant_ids = await self._participant_ids()
                     for uid in participant_ids:
                         unread_ids_for_uid = await self._unread_ids_for_user(uid)
+                        # Lookup mute state for that uid
+                        @sync_to_async
+                        def _is_muted_for(uid_):
+                            m = ConversationMute.objects.filter(conversation_id=self.conversation_id, user_id=uid_).first()
+                            return bool(m and m.is_active())
+                        is_muted = await _is_muted_for(uid)
                         await self.channel_layer.group_send(
                             f"user_{uid}",
                             {
@@ -255,11 +280,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "id": message.id,
                                     "status": status_to_emit,
                                     "user_id": self.user.id,
-                                    "sender_name": sender_name,          # <- helps your toast UI
-                                    "sender_avatar": sender_avatar,      # <- helps your toast UI
+                                    "sender_name": sender_name,
+                                    "sender_avatar": sender_avatar,
                                 },
                                 "updated_at": str(timezone.now()),
                                 "unread_ids": unread_ids_for_uid,
+                                "is_muted": is_muted,  # <— NEW hint
                             },
                         )
 

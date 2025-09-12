@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from messagesapp.models import Conversation, Message, ConversationDeletion
+from messagesapp.models import Conversation, Message, ConversationDeletion, UserMessagesReport, ConversationMute
 from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer
 from django.contrib.auth import get_user_model
 from campaign.models import Campaign, Participation, CampaignWinner
@@ -238,3 +238,115 @@ class DeleteConversationView(APIView):
             defaults={'deleted_at': timezone.now()}
         )
         return Response({'message': 'Conversation deleted for user.'}, status=200)
+    
+
+
+def _get_peer_or_400(conversation, me):
+    """
+    For 1:1 conversation, return the other user or raise 400 if not 1:1.
+    """
+    others = conversation.participants.exclude(id=me.id)
+    if others.count() != 1:
+        # built-in Response: simple error payload
+        from rest_framework.response import Response
+        from rest_framework import status
+        return Response({'error': 'Operation only valid for 1:1 conversations.'}, status=status.HTTP_400_BAD_REQUEST)
+    return others.first()
+
+class MuteConversationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id):
+        """
+        Body: { "duration_seconds": number|null }
+        - 0 => unmute (delete row)
+        - null => indefinite mute (muted_until=None)
+        - N => muted_until = now + N seconds
+        """
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+        seconds = request.data.get('duration_seconds', 0)
+
+        if seconds == 0:
+            # built-in delete(): delete rows matching filter
+            ConversationMute.objects.filter(conversation=conv, user=request.user).delete()
+            return Response({'muted_until': None, 'status': 'unmuted'})
+
+        if seconds is None:
+            m, _ = ConversationMute.objects.update_or_create(  # built-in: upsert row
+                conversation=conv, user=request.user,
+                defaults={'muted_until': None}
+            )
+            return Response({'muted_until': None, 'status': 'muted_indefinite'})
+
+        try:
+            seconds = int(seconds)  # built-in int(): coercion or ValueError
+        except (TypeError, ValueError):
+            return Response({'error': 'duration_seconds must be integer, null, or 0'}, status=400)
+
+        until = timezone.now() + timezone.timedelta(seconds=seconds)  # built-in timedelta
+        m, _ = ConversationMute.objects.update_or_create(
+            conversation=conv, user=request.user,
+            defaults={'muted_until': until}
+        )
+        return Response({'muted_until': m.muted_until.isoformat(), 'status': 'muted'})
+
+
+class BlockPeerView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+        peer = _get_peer_or_400(conv, request.user)
+        if isinstance(peer, Response):
+            return peer
+
+        # Prevent duplicate rows; built-in get_or_create() returns (obj, created_bool)
+        BlockedUsers.objects.get_or_create(blocker=request.user, blocked=peer)
+        return Response({'ok': True})
+
+
+class UnblockPeerView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+        peer = _get_peer_or_400(conv, request.user)
+        if isinstance(peer, Response):
+            return peer
+
+        BlockedUsers.objects.filter(blocker=request.user, blocked=peer).delete()
+        return Response({'ok': True})
+
+
+class ReportUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Body: { conversation_id, reason, text, block }
+        """
+        conv_id = request.data.get('conversation_id')
+        reason = request.data.get('reason')
+        text = request.data.get('text', '')
+        block = bool(request.data.get('block', False))
+
+        if not conv_id or not reason:
+            return Response({'error': 'conversation_id and reason are required'}, status=400)
+
+        conv = get_object_or_404(Conversation, id=conv_id, participants=request.user)
+        peer = _get_peer_or_400(conv, request.user)
+        if isinstance(peer, Response):
+            return peer
+
+        UserMessagesReport.objects.create(
+            reporter=request.user,
+            reported_user=peer,
+            conversation=conv,
+            reason=reason,
+            text=text or '',
+        )
+
+        if block:
+            BlockedUsers.objects.get_or_create(blocker=request.user, blocked=peer)
+
+        return Response({'ok': True})
