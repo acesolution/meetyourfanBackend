@@ -63,7 +63,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     unread_ids = serializers.SerializerMethodField() 
     campaign = CampaignBasicSerializer(read_only=True)
     is_blocked = serializers.SerializerMethodField()     
-    mute_until = serializers.SerializerMethodField()     
+    muted_until = serializers.SerializerMethodField()     
 
     class Meta:
         model = Conversation
@@ -78,7 +78,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'last_message', 
             'unread_ids',
             'is_blocked',
-            'mute_until',
+            'muted_until',
         )
         
     def get_unread_message_count(self, obj):
