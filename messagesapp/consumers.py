@@ -3,11 +3,12 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
-from messagesapp.models import Conversation, Message, ConversationMute
+from messagesapp.models import Conversation, Message
 from profileapp.models import BlockedUsers  # Import BlockedUsers model
 import logging
 from django.utils import timezone
 from django.db import models
+from notificationsapp.models import ConversationMute
 
 logger = logging.getLogger(__name__)
 

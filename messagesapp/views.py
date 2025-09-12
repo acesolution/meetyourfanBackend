@@ -4,7 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from messagesapp.models import Conversation, Message, ConversationDeletion, UserMessagesReport, ConversationMute
+from messagesapp.models import Conversation, Message, ConversationDeletion, UserMessagesReport
+from notificationsapp.models import ConversationMute
 from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer
 from django.contrib.auth import get_user_model
 from campaign.models import Campaign, Participation, CampaignWinner
@@ -274,7 +275,7 @@ class MuteConversationView(APIView):
         if seconds is None:
             m, _ = ConversationMute.objects.update_or_create(  # built-in: upsert row
                 conversation=conv, user=request.user,
-                defaults={'muted_until': None}
+                defaults={'mute_until': None}
             )
             return Response({'muted_until': None, 'status': 'muted_indefinite'})
 
@@ -286,9 +287,9 @@ class MuteConversationView(APIView):
         until = timezone.now() + timezone.timedelta(seconds=seconds)  # built-in timedelta
         m, _ = ConversationMute.objects.update_or_create(
             conversation=conv, user=request.user,
-            defaults={'muted_until': until}
+            defaults={'mute_until': until}
         )
-        return Response({'muted_until': m.muted_until.isoformat(), 'status': 'muted'})
+        return Response({'muted_until': m.mute_until.isoformat(), 'status': 'muted'})
 
 
 class BlockPeerView(APIView):

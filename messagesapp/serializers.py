@@ -1,7 +1,8 @@
 # messagesapp/serializers.py
 
 from rest_framework import serializers
-from messagesapp.models import Conversation, Message, ConversationMute
+from messagesapp.models import Conversation, Message
+from notificationsapp.models import ConversationMute
 from django.contrib.auth import get_user_model
 from api.models import Profile
 from campaign.models import Campaign
@@ -62,7 +63,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     unread_ids = serializers.SerializerMethodField() 
     campaign = CampaignBasicSerializer(read_only=True)
     is_blocked = serializers.SerializerMethodField()     
-    muted_until = serializers.SerializerMethodField()     
+    mute_until = serializers.SerializerMethodField()     
 
     class Meta:
         model = Conversation
@@ -77,7 +78,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'last_message', 
             'unread_ids',
             'is_blocked',
-            'muted_until',
+            'mute_until',
         )
         
     def get_unread_message_count(self, obj):
@@ -138,7 +139,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         m = ConversationMute.objects.filter(conversation=obj, user=request.user).first()  # built-in: first()
         if not m:
             return None
-        return None if m.muted_until is None else m.muted_until.isoformat()
+        return None if m.mute_until is None else m.mute_until.isoformat()
 
 
 class MessageSerializer(serializers.ModelSerializer):

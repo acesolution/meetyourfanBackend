@@ -4,7 +4,6 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericForeignKey
-from messagesapp.models import Conversation
 
 class Notification(models.Model):
     # Who triggers the notification
@@ -43,12 +42,12 @@ class Notification(models.Model):
 
 class ConversationMute(models.Model):
     conversation = models.ForeignKey(
-        Conversation, on_delete=models.CASCADE, related_name='mutes'
+        'messagesapp.Conversation', on_delete=models.CASCADE, related_name='mutes'
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_mutes'
     )
-    mute_until = models.DateTimeField()  # Time until which notifications are muted
+    mute_until = models.DateTimeField(null=True, blank=True)  # Time until which notifications are muted
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
