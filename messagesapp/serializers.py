@@ -64,8 +64,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     unread_ids = serializers.SerializerMethodField() 
     campaign = CampaignBasicSerializer(read_only=True)
     is_blocked = serializers.SerializerMethodField()     
-    muted_until = serializers.SerializerMethodField()     
-
+    
     class Meta:
         model = Conversation
         fields = (
@@ -79,7 +78,6 @@ class ConversationSerializer(serializers.ModelSerializer):
             'last_message', 
             'unread_ids',
             'is_blocked',
-            'muted_until',
         )
         
     def get_unread_message_count(self, obj):
@@ -116,6 +114,26 @@ class ConversationSerializer(serializers.ModelSerializer):
             return data
         return None
     
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        request = self.context.get('request')
+
+        # Only compute for an authenticated user
+        if request and request.user.is_authenticated:
+            m = (ConversationMute.objects
+                 .filter(conversation=obj, user=request.user)
+                 .only('mute_until')
+                 .first())
+
+            if m:
+                # always => null; timed => ISO string
+                data['muted_until'] = (
+                    None if m.mute_until is None
+                    else timezone.localtime(m.mute_until).isoformat()
+                )
+            # else: no row -> "never" -> omit the key entirely
+
+        return data
     
     def get_is_blocked(self, obj):
         """
@@ -132,24 +150,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         peer = others.first()
         return BlockedUsers.objects.filter(blocker=request.user, blocked=peer).exists()
 
-    def get_muted_until(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
-            # never => omit the field entirely
-            raise serializers.SkipField
-
-        m = (ConversationMute.objects
-             .filter(conversation=obj, user=request.user)
-             .only('mute_until')
-             .first())
-
-        if not m:
-            # never => omit the field entirely
-            raise serializers.SkipField
-
-        # always => return null; timed => ISO string
-        return None if m.mute_until is None else timezone.localtime(m.mute_until).isoformat()
-
+    
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
