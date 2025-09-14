@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from api.models import Profile
 from campaign.models import Campaign
 from profileapp.models import BlockedUsers
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -132,14 +133,22 @@ class ConversationSerializer(serializers.ModelSerializer):
         return BlockedUsers.objects.filter(blocker=request.user, blocked=peer).exists()
 
     def get_muted_until(self, obj):
-        """Return ISO string or null if not muted for this user."""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
-            return None
-        m = ConversationMute.objects.filter(conversation=obj, user=request.user).first()  # built-in: first()
+            # never => omit the field entirely
+            raise serializers.SkipField
+
+        m = (ConversationMute.objects
+             .filter(conversation=obj, user=request.user)
+             .only('mute_until')
+             .first())
+
         if not m:
-            return None
-        return None if m.mute_until is None else m.mute_until.isoformat()
+            # never => omit the field entirely
+            raise serializers.SkipField
+
+        # always => return null; timed => ISO string
+        return None if m.mute_until is None else timezone.localtime(m.mute_until).isoformat()
 
 
 class MessageSerializer(serializers.ModelSerializer):
