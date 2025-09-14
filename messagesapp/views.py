@@ -268,29 +268,23 @@ class MuteConversationView(APIView):
         seconds = request.data.get('duration_seconds', 0)
 
         if seconds == 0:
-            # built-in delete(): delete rows matching filter
             ConversationMute.objects.filter(conversation=conv, user=request.user).delete()
-            return Response({'muted_until': None, 'status': 'unmuted'})
+            return Response({'mute_until': None, 'status': 'unmuted'})  # response can be ignored by FE if you prefer
 
         if seconds is None:
-            m, _ = ConversationMute.objects.update_or_create(  # built-in: upsert row
+            m, _ = ConversationMute.objects.update_or_create(
                 conversation=conv, user=request.user,
                 defaults={'mute_until': None}
             )
-            return Response({'muted_until': None, 'status': 'muted_indefinite'})
+            return Response({'mute_until': None, 'status': 'muted_indefinite'})
 
-        try:
-            seconds = int(seconds)  # built-in int(): coercion or ValueError
-        except (TypeError, ValueError):
-            return Response({'error': 'duration_seconds must be integer, null, or 0'}, status=400)
-
-        until = timezone.now() + timezone.timedelta(seconds=seconds)  # built-in timedelta
+        # timed:
+        until = timezone.now() + timezone.timedelta(seconds=seconds)
         m, _ = ConversationMute.objects.update_or_create(
             conversation=conv, user=request.user,
             defaults={'mute_until': until}
         )
-        return Response({'muted_until': m.mute_until.isoformat(), 'status': 'muted'})
-
+        return Response({'mute_until': m.mute_until.isoformat(), 'status': 'muted'})
 
 class BlockPeerView(APIView):
     permission_classes = [IsAuthenticated]

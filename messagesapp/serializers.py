@@ -118,7 +118,6 @@ class ConversationSerializer(serializers.ModelSerializer):
         data = super().to_representation(obj)
         request = self.context.get('request')
 
-        # Only compute for an authenticated user
         if request and request.user.is_authenticated:
             m = (ConversationMute.objects
                  .filter(conversation=obj, user=request.user)
@@ -126,12 +125,12 @@ class ConversationSerializer(serializers.ModelSerializer):
                  .first())
 
             if m:
-                # always => null; timed => ISO string
-                data['muted_until'] = (
+                # Always => null, Timed => ISO; Never => omit key entirely
+                data['mute_until'] = (
                     None if m.mute_until is None
                     else timezone.localtime(m.mute_until).isoformat()
                 )
-            # else: no row -> "never" -> omit the key entirely
+            # else: Never → leave key absent
 
         return data
     
