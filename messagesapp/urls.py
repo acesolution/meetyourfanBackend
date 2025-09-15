@@ -10,7 +10,9 @@ from messagesapp.views import (
     MuteConversationView,          
     BlockPeerView,                 
     UnblockPeerView,               
-    ReportUserView,                
+    ReportUserView,  
+    MessagesAroundView,
+    MessageSearchView              
 )
 
 urlpatterns = [
@@ -28,4 +30,7 @@ urlpatterns = [
     path('conversations/<int:conversation_id>/unblock/', UnblockPeerView.as_view(), name='conversation-unblock'),
 
     path('reports/', ReportUserView.as_view(), name='report-user'),
+    
+    path('conversations/<int:conversation_id>/messages/search/', MessageSearchView.as_view()),
+    path('conversations/<int:conversation_id>/messages/around/<int:message_id>/', MessagesAroundView.as_view()),
 ]

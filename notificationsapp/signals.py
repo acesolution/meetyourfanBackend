@@ -9,6 +9,7 @@ from asgiref.sync import async_to_sync
 from django.utils import timezone
 import logging
 from notificationsapp.serializers import ActorUserSerializer
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,13 @@ def notify_new_message(sender, instance, created, **kwargs):
         actor_data = ActorUserSerializer(sender_user).data  # ← full actor
 
         for user in conversation.participants.exclude(id=sender_user.id):
-            mute_record = ConversationMute.objects.filter(conversation=conversation, user=user).first()
-            if mute_record and timezone.now() < mute_record.mute_until:
-                continue
+            # MUTED if: mute_until is NULL (always) OR in the future
+            is_muted = ConversationMute.objects.filter(
+                conversation=conversation, user=user
+            ).filter(Q(mute_until__isnull=True) | Q(mute_until__gt=timezone.now())).exists()
+
+            if is_muted:
+                continue  # skip creating Notification + skip group_send
 
             notification = Notification.objects.create(
                 actor=sender_user,

@@ -345,3 +345,50 @@ class ReportUserView(APIView):
             BlockedUsers.objects.get_or_create(blocker=request.user, blocked=peer)
 
         return Response({'ok': True})
+    
+    
+class SearchPagination(PageNumberPagination):
+    page_size = 50
+
+class MessageSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conversation_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+        q = (request.query_params.get('q') or '').strip()
+        if not q:
+            return Response({'results': [], 'count': 0, 'next': None, 'previous': None}, status=200)
+
+        qs = conv.messages.filter(content__icontains=q).order_by('-created_at')
+        paginator = SearchPagination()
+        page = paginator.paginate_queryset(qs, request)
+        ser = MessageSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(ser.data)
+
+class MessagesAroundView(APIView):
+    """
+    Return a chronological slice of messages centered on `message_id`.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conversation_id, message_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+        anchor = get_object_or_404(Message, id=message_id, conversation=conv)
+
+        try:
+            window = int(request.query_params.get('window', 50))
+        except ValueError:
+            window = 50
+        window = max(10, min(window, 200))
+
+        before = list(
+            conv.messages.filter(created_at__lt=anchor.created_at)
+            .order_by('-created_at')[:window]
+        )
+        after = list(
+            conv.messages.filter(created_at__gte=anchor.created_at)
+            .order_by('created_at')[:window]
+        )
+        items = before[::-1] + after  # chronological asc
+        ser = MessageSerializer(items, many=True, context={'request': request})
+        return Response({'results': ser.data, 'anchor_id': anchor.id}, status=200)
