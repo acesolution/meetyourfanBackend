@@ -392,3 +392,6 @@ class MessagesAroundView(APIView):
         items = before[::-1] + after  # chronological asc
         ser = MessageSerializer(items, many=True, context={'request': request})
         return Response({'results': ser.data, 'anchor_id': anchor.id}, status=200)
+    
+    
+    
