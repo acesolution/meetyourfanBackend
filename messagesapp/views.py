@@ -17,6 +17,7 @@ from profileapp.models import BlockedUsers  # Import BlockedUsers model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db import transaction, IntegrityError 
+from django.db.models import Q
 
 User = get_user_model()
 
@@ -420,3 +421,76 @@ class RemoveParticipantView(APIView):
         # Message.objects.create(conversation=conv, sender=request.user, content=f"{victim.username} was removed.")
 
         return Response({'ok': True}, status=200)
+    
+    
+class AddableParticipantsView(APIView):
+    """
+    List users who are NOT already in the conversation, filtered by ?q=.
+    Only participants can see this list. You can later constrain to creator or followees.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conversation_id):
+      conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+      q = (request.query_params.get("q") or "").strip().lower()
+
+      # exclude current members
+      existing_ids = conv.participants.values_list("id", flat=True)
+      qs = User.objects.exclude(id__in=existing_ids)
+
+      if q:
+          qs = qs.filter(
+              Q(username__icontains=q) |
+              Q(profile__name__icontains=q)
+          )
+
+      # keep it light; you can paginate if needed
+      qs = qs.select_related("profile")[:200]
+      return Response(UserSerializer(qs, many=True, context={'request': request}).data, status=200)
+
+
+class AddParticipantsView(APIView):
+    """
+    POST { "user_ids": [int, ...] } → add to broadcast.
+    Only the broadcast creator can add. Ignores users already present.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+
+        if conv.category != "broadcast":
+            return Response({'error': 'Only broadcast conversations allow adding members.'}, status=400)
+        if conv.created_by_id != request.user.id:
+            return Response({'error': 'Only the broadcast creator can add members.'}, status=403)
+
+        ids = request.data.get("user_ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({'error': 'user_ids must be a non-empty list.'}, status=400)
+
+        # sanitize: remove dupes & existing
+        existing = set(conv.participants.values_list("id", flat=True))
+        ids = [int(i) for i in ids if int(i) not in existing and int(i) != request.user.id]
+        if not ids:
+            return Response({'ok': True, 'added': []}, status=200)
+
+        # optional: block checks like createConversation
+        for uid in ids:
+            u = User.objects.filter(id=uid).first()
+            if not u:
+                continue
+            if BlockedUsers.objects.filter(blocker=request.user, blocked=u).exists():
+                return Response({'error': f'You have blocked {u.username}.'}, status=403)
+            if BlockedUsers.objects.filter(blocker=u, blocked=request.user).exists():
+                return Response({'error': f'{u.username} has blocked you.'}, status=403)
+
+        users = list(User.objects.filter(id__in=ids))
+        if users:
+            conv.participants.add(*users)  # built-in: bulk add M2M
+            conv.save(update_fields=['updated_at'])
+
+            # optional: system message
+            # names = ", ".join([u.username for u in users])
+            # Message.objects.create(conversation=conv, sender=request.user, content=f"Added {names} to the broadcast.")
+
+        return Response({'ok': True, 'added': [u.id for u in users]}, status=200)
