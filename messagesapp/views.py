@@ -395,3 +395,28 @@ class MessagesAroundView(APIView):
     
     
     
+class RemoveParticipantView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id, user_id):
+        conv = get_object_or_404(Conversation, id=conversation_id, participants=request.user)
+
+        # Only for broadcast, and only creator can prune members (adjust to your rules)
+        if conv.category != 'broadcast':
+            return Response({'error': 'Only broadcast conversations support removing members.'}, status=400)
+        if conv.created_by_id != request.user.id:
+            return Response({'error': 'Only the broadcast creator can remove members.'}, status=403)
+
+        victim = get_object_or_404(User, id=user_id)
+        if victim.id == request.user.id:
+            return Response({'error': 'Cannot remove yourself.'}, status=400)
+        if not conv.participants.filter(id=victim.id).exists():
+            return Response({'error': 'User is not a participant.'}, status=404)
+
+        conv.participants.remove(victim)
+        conv.save(update_fields=['updated_at'])
+
+        # Optional: system message
+        # Message.objects.create(conversation=conv, sender=request.user, content=f"{victim.username} was removed.")
+
+        return Response({'ok': True}, status=200)
