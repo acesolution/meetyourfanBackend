@@ -11,6 +11,10 @@ import boto3
 from io import BytesIO
 from pathlib import Path
 from django.core.files.base import ContentFile
+from django.db import transaction
+from django.utils import timezone
+from messagesapp.models import Conversation, Message
+from campaign.models import  CampaignWinner
 
 
 def select_random_winners(campaign_id):
@@ -68,29 +72,62 @@ def select_random_winners(campaign_id):
 
 
 
-def get_or_create_winner_conversation(influencer, winner):
-    from messagesapp.models import Conversation
-    
+def _signature(u1_id: int, u2_id: int) -> str:
     """
-    Checks if any conversation exists between the influencer and the winner.
-    If a conversation exists but its category is not 'winner', update its category.
-    Otherwise, create a new conversation with category 'winner' and add both as participants.
+    Stable participant signature.
+    - built-in sorted(): ensures order-insensitive
+    - set(): de-dupes (defensive)
+    - '|'.join(): compact key like '5|42'
     """
-    # Find conversations that include both influencer and winner,
-    # and annotate the number of participants in each conversation.
-    conversation = Conversation.objects.filter(
-        Q(participants=influencer) & Q(participants=winner)
-    ).annotate(num_participants=Count('participants')).filter(num_participants=2).first()
-    
-    if conversation:
-        if conversation.category != 'winner':
-            conversation.category = 'winner'
-            conversation.save(update_fields=['category'])
-    else:
-        conversation = Conversation.objects.create(category='winner')
-        conversation.participants.add(influencer, winner)
-    return conversation
+    return "|".join(str(i) for i in sorted({u1_id, u2_id}))
 
+def get_or_create_winner_conversation(influencer, winner, campaign, seed_text=None):
+    """
+    Idempotent 1:1 creation/upgrade:
+    - If a 1:1 exists (category in ['winner','other']), reuse it.
+    - Ensure category == 'winner'.
+    - Ensure campaign is linked if missing.
+    - Optionally seed a message only when the row is NEW.
+    """
+    sig = _signature(influencer.id, winner.id)
+
+    with transaction.atomic():  # built-in: all-or-nothing DB block
+        conv = (Conversation.objects
+                .select_for_update()            # built-in: row lock avoids race twins
+                .filter(participant_signature=sig, category__in=['winner', 'other'])
+                .first())                       # built-in: returns row or None
+
+        created = False
+        if conv is None:
+            conv = Conversation.objects.create(
+                category='winner',
+                campaign=campaign,              # ✅ attach campaign
+                created_by=influencer,
+                participant_signature=sig,
+            )                                   # built-in: INSERT + return instance
+            conv.participants.set([influencer, winner])  # built-in: M2M bulk set
+            created = True
+        else:
+            updates = []
+            if conv.category != 'winner':
+                conv.category = 'winner'
+                updates.append('category')
+            if campaign and conv.campaign_id is None:
+                conv.campaign = campaign
+                updates.append('campaign')
+            if updates:
+                conv.updated_at = timezone.now()
+                updates.append('updated_at')
+                conv.save(update_fields=updates) # built-in: UPDATE specific fields
+
+        if created and seed_text:
+            Message.objects.create(
+                conversation=conv,
+                sender=influencer,
+                content=seed_text
+            )                                    # built-in: INSERT message
+
+    return conv, created
 
 
 def assign_media_to_user(campaign, user, quantity: int):
@@ -196,3 +233,12 @@ def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.15):
     ext = "jpg" if fmt == "JPEG" else "png"
     name = Path(getattr(uploaded_file, "name", "upload")).stem + f"_wm.{ext}"
     return ContentFile(buf.read(), name=name)
+
+
+def bulk_dm_all_winners(campaign, sender, text: str):
+    conv_ids = []
+    for cw in CampaignWinner.objects.filter(campaign=campaign).select_related("fan"):
+        conv, _ = get_or_create_winner_conversation(sender, cw.fan, campaign)
+        Message.objects.create(conversation=conv, sender=sender, content=text)
+        conv_ids.append(conv.id)
+    return conv_ids

@@ -47,9 +47,7 @@ from web3.exceptions import ContractLogicError, TimeExhausted
 import time
 from campaign.utils import (
     select_random_winners,
-    get_or_create_winner_conversation,
     assign_media_to_user,
-    generate_presigned_s3_url,
     watermark_image,
 )
 from blockchain.tasks import register_campaign_on_chain, hold_for_campaign_on_chain
@@ -552,10 +550,6 @@ class WinnerSelectionView(APIView):
             campaign.winners_selected = True
             campaign.save(update_fields=["winners_selected"])
             message = f"Holds released; selected {len(winners)} winner(s)."
-
-            # **start a conversation** between influencer & each winner
-            for w in winners:
-                get_or_create_winner_conversation(user, w)
 
         # Build response
         return Response(

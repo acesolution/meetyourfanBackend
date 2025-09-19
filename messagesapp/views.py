@@ -4,9 +4,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from messagesapp.models import Conversation, Message, ConversationDeletion, UserMessagesReport
+from messagesapp.models import Conversation, Message, ConversationDeletion, UserMessagesReport, MeetupSchedule
 from notificationsapp.models import ConversationMute
-from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer
+from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer, MeetupScheduleSerializer
 from django.contrib.auth import get_user_model
 from campaign.models import Campaign, Participation, CampaignWinner
 from rest_framework.generics import ListAPIView
@@ -18,6 +18,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db import transaction, IntegrityError 
 from django.db.models import Q
+from profileapp.signals import push_notification
+from django.utils.dateparse import parse_datetime
 
 User = get_user_model()
 
@@ -494,3 +496,95 @@ class AddParticipantsView(APIView):
             # Message.objects.create(conversation=conv, sender=request.user, content=f"Added {names} to the broadcast.")
 
         return Response({'ok': True, 'added': [u.id for u in users]}, status=200)
+    
+    
+class ScheduleMeetupView(APIView):
+    """
+    Allows an influencer to schedule a meetup with a campaign winner.
+    Expects:
+      - campaign_id
+      - winner_id
+      - scheduled_datetime (ISO 8601 string)
+      - location
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.user_type != 'influencer':
+            return Response({"error": "Only influencers can schedule meetups."},
+                            status=status.HTTP_403_FORBIDDEN)
+                            
+        campaign_id = request.data.get("campaign_id")
+        winner_id = request.data.get("winner_id")
+        scheduled_datetime_str = request.data.get("scheduled_datetime")
+        location = request.data.get("location")
+        
+        if not (campaign_id and winner_id and scheduled_datetime_str and location):
+            return Response({"error": "campaign_id, winner_id, scheduled_datetime, and location are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        # Parse scheduled_datetime
+        scheduled_datetime = parse_datetime(scheduled_datetime_str)
+        if scheduled_datetime is None:
+            return Response({"error": "Invalid scheduled_datetime format."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ensure the campaign exists and belongs to the influencer.
+        campaign = get_object_or_404(Campaign, id=campaign_id, user=user)
+        
+        # Get the winner user.
+        winner = get_object_or_404(User, id=winner_id)
+        
+        # Create the meetup schedule.
+        meetup = MeetupSchedule.objects.create(
+            campaign=campaign,
+            influencer=user,
+            winner=winner,
+            scheduled_datetime=scheduled_datetime,
+            location=location,
+            status='pending'
+        )
+        
+        # Push a notification to the winner.
+        push_notification(
+            actor=user,  # influencer schedules the meetup
+            recipient=winner,
+            verb="scheduled a meetup with you",
+            target=meetup  # You can customize how the target is displayed.
+        )
+        
+        serializer = MeetupScheduleSerializer(meetup, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    
+class RespondToMeetupView(APIView):
+    """
+    Allows the winner to respond to a meetup invitation.
+    Expects:
+      - response: "accepted" or "rejected"
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, meetup_id):
+        user = request.user
+        response_value = request.data.get("response")
+        if response_value not in ['accepted', 'rejected']:
+            return Response({"error": "Response must be either 'accepted' or 'rejected'."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ensure the authenticated user is the winner for this meetup.
+        meetup = get_object_or_404(MeetupSchedule, id=meetup_id, winner=user)
+        
+        meetup.status = response_value
+        meetup.save()
+        
+        # Notify the influencer about the response.
+        push_notification(
+            actor=user,  # the winner is responding
+            recipient=meetup.influencer,
+            verb=f"{response_value} your meetup invitation",
+            target=meetup
+        )
+        
+        return Response({"message": f"Meetup invitation {response_value}."}, status=status.HTTP_200_OK)
+

@@ -7,8 +7,7 @@ from profileapp.views import (
     AcceptFollowRequestView, DeclineFollowRequestView,
     CancelFollowRequestView, FollowersListView, 
     BlockedUsersListView, FollowRequestsListView,
-    FollowingListView, ReportUserView, RespondToMeetupView,
-    ScheduleMeetupView, ReportIssueView
+    FollowingListView, ReportUserView,  ReportIssueView
 )
 
 urlpatterns = [
@@ -36,8 +35,6 @@ urlpatterns = [
     path('all-followings/', FollowingListView.as_view(), name='following-list'),
     
     path('report-user/', ReportUserView.as_view(), name='report-user'),
-    path('meetup/schedule/', ScheduleMeetupView.as_view(), name='schedule-meetup'),
-    path('meetup/respond/<int:meetup_id>/', RespondToMeetupView.as_view(), name='respond-meetup'),
     
     path('report-genric-issue/', ReportIssueView.as_view(), name='report-genric-issue'),
 ]

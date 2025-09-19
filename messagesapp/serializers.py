@@ -1,7 +1,7 @@
 # messagesapp/serializers.py
 
 from rest_framework import serializers
-from messagesapp.models import Conversation, Message
+from messagesapp.models import Conversation, Message, MeetupSchedule
 from notificationsapp.models import ConversationMute
 from django.contrib.auth import get_user_model
 from api.models import Profile
@@ -159,3 +159,10 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = ['id', 'conversation', 'sender', 'content', 'status', 'created_at']
 
 
+
+
+class MeetupScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MeetupSchedule
+        fields = '__all__'
+        read_only_fields = ('influencer', 'status', 'created_at', 'updated_at')

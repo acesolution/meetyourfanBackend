@@ -56,11 +56,6 @@ class BlockedUsersSerializer(serializers.ModelSerializer):
         fields = ('id', 'created_at', 'blocked_user')
         
         
-class MeetupScheduleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = MeetupSchedule
-        fields = '__all__'
-        read_only_fields = ('influencer', 'status', 'created_at', 'updated_at')
 
 
 class FollowerDetailSerializer(serializers.ModelSerializer):

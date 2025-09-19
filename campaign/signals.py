@@ -10,10 +10,11 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import logging
 from django.db.models import Count
-from .views import get_or_create_winner_conversation
+from .utils import get_or_create_winner_conversation
 from PIL import Image, ImageFilter
 from io import BytesIO
 from django.core.files.base import ContentFile
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def notify_campaign_closed(sender, instance, **kwargs):
             target=campaign
         )
 
-@receiver(post_save, sender=CampaignWinner)
+@receiver(post_save, sender=CampaignWinner, dispatch_uid="campaign_winner_notify_v1")
 def notify_winner_selection(sender, instance, created, **kwargs):
     if created:
         campaign = instance.campaign
@@ -136,16 +137,22 @@ def notify_winner_selection(sender, instance, created, **kwargs):
             target=campaign
         )
 
-        # --- Conversation Setup ---
-        # Use the helper function to get (or update) the conversation regardless of its current category.
-        conversation = get_or_create_winner_conversation(influencer, winner)
+        # Make sure the actual messaging runs only after the row commits:
+        def _after_commit():
+            # Ensure a 1:1 exists (no seed text here to avoid double-send)
+            conv, _ = get_or_create_winner_conversation(
+                influencer=influencer,
+                winner=winner,
+                campaign=campaign,
+                seed_text=None,              # important: prevent helper from also sending
+            )
 
-        # Create an initial congratulatory message.
-        Message.objects.create(
-            conversation=conversation,
-            sender=influencer,
-            content=f"Congratulations! You have been selected as a winner for the campaign: {campaign.title}"
-        )
+            # Send exactly one DM for this newly-created winner
+            text = getattr(campaign, "winner_dm_template", None) \
+                or f"Congratulations! You won the campaign: {campaign.title}"
+            Message.objects.create(conversation=conv, sender=influencer, content=text)
+
+        transaction.on_commit(_after_commit)
 
 
 @receiver(post_save, sender=MediaFile)

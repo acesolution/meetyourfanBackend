@@ -129,3 +129,30 @@ class UserMessagesReport(models.Model):
         indexes = [
             models.Index(fields=['reported_user', 'created_at']),
         ]
+        
+        
+MEETUP_STATUS_CHOICES = (
+    ('pending', 'Pending'),
+    ('accepted', 'Accepted'),
+    ('rejected', 'Rejected'),
+)
+
+class MeetupSchedule(models.Model):
+    campaign = models.ForeignKey(
+        Campaign, on_delete=models.CASCADE, related_name='meetup_schedules'
+    )
+    influencer = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='meetups_created'
+    )
+    winner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='meetups_received'
+    )
+    # Combine date and time into a single DateTimeField for simplicity.
+    scheduled_datetime = models.DateTimeField()
+    location = models.CharField(max_length=255)
+    status = models.CharField(max_length=10, choices=MEETUP_STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    def __str__(self):
+        return f"Meetup for campaign {self.campaign.id} between {self.influencer.username} and {self.winner.username}"
