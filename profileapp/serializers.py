@@ -1,7 +1,7 @@
 # profileapp/serializers.py
 
 from rest_framework import serializers
-from profileapp.models import Follower, BlockedUsers, FollowRequest, UserReport, MeetupSchedule
+from profileapp.models import Follower, BlockedUsers, FollowRequest, UserReport
 from django.contrib.auth import get_user_model
 from api.models import Profile, ReportGenericIssue  # Adjust the import if your Profile model is located elsewhere
 
