@@ -14,7 +14,6 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 from messagesapp.models import Conversation, Message
-from campaign.models import  CampaignWinner
 
 
 def select_random_winners(campaign_id):
@@ -236,6 +235,8 @@ def watermark_image(uploaded_file, text="meetyourfan.io", opacity=0.15):
 
 
 def bulk_dm_all_winners(campaign, sender, text: str):
+    from campaign.models import  CampaignWinner
+    
     conv_ids = []
     for cw in CampaignWinner.objects.filter(campaign=campaign).select_related("fan"):
         conv, _ = get_or_create_winner_conversation(sender, cw.fan, campaign)
