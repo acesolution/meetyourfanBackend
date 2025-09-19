@@ -1,7 +1,7 @@
 # profileapp/admin.py
 
 from django.contrib import admin
-from profileapp.models import BlockedUsers, Follower, FollowRequest, UserReport, MeetupSchedule
+from profileapp.models import BlockedUsers, Follower, FollowRequest, UserReport
 
 @admin.register(BlockedUsers)
 class BlockedUsersAdmin(admin.ModelAdmin):
@@ -30,10 +30,3 @@ class UserReportAdmin(admin.ModelAdmin):
     list_filter = ('category', 'created_at')
     search_fields = ('reporter__username', 'reported__username', 'category')
     ordering = ('-created_at',)
-
-@admin.register(MeetupSchedule)
-class MeetupScheduleAdmin(admin.ModelAdmin):
-    list_display = ('id', 'campaign', 'influencer', 'winner', 'scheduled_datetime', 'location', 'status', 'created_at', 'updated_at')
-    list_filter = ('status', 'scheduled_datetime', 'created_at')
-    search_fields = ('campaign__title', 'influencer__username', 'winner__username', 'location')
-    ordering = ('-scheduled_datetime',)
