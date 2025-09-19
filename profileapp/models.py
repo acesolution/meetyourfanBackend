@@ -2,7 +2,6 @@
 
 from django.db import models
 from django.conf import settings
-from campaign.models import Campaign
 
 
 class BlockedUsers(models.Model):

@@ -3,7 +3,6 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from django.db.models import Q  # built-in Q objects are used to express WHERE conditions
-from campaign.models import Campaign
 
 class Conversation(models.Model):
     CATEGORY_CHOICES = [
@@ -25,7 +24,7 @@ class Conversation(models.Model):
 
     # Optional campaign link
     campaign = models.ForeignKey(
-        Campaign, null=True, blank=True,
+        'campaign.Campaign', null=True, blank=True,
         on_delete=models.SET_NULL,           # built-in: set campaign field to NULL if Campaign is deleted
         related_name='conversations'
     )
@@ -139,7 +138,7 @@ MEETUP_STATUS_CHOICES = (
 
 class MeetupSchedule(models.Model):
     campaign = models.ForeignKey(
-        Campaign, on_delete=models.CASCADE, related_name='meetup_schedules'
+        'campaign.Campaign', on_delete=models.CASCADE, related_name='meetup_schedules'
     )
     influencer = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='meetups_created'
