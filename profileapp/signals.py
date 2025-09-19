@@ -4,7 +4,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.conf import settings
 from api.models import Profile  # Import the Profile model from the same app
-from profileapp.models import Follower, FollowRequest, MeetupSchedule
+from profileapp.models import Follower, FollowRequest
 from messagesapp.models import Conversation, Message
 from notificationsapp.models import Notification
 from channels.layers import get_channel_layer
@@ -105,64 +105,64 @@ def notify_follow_request_accepted(sender, instance, created, **kwargs):
         )
         
         
-@receiver(post_save, sender=MeetupSchedule)
-def notify_meetup_scheduled(sender, instance, created, **kwargs):
-    if created:
-        # ------------------------------
-        # 1. Send a Notification
-        # ------------------------------
-        # Use the existing push_notification function
+# @receiver(post_save, sender=MeetupSchedule)
+# def notify_meetup_scheduled(sender, instance, created, **kwargs):
+#     if created:
+#         # ------------------------------
+#         # 1. Send a Notification
+#         # ------------------------------
+#         # Use the existing push_notification function
 
-        # Notify the winner that the influencer has scheduled a meetup.
-        push_notification(
-            actor=instance.influencer,      # The influencer schedules the meetup
-            recipient=instance.winner,        # The winner should be notified
-            verb="scheduled a meetup with you",  # Customize the message as needed
-            target=instance.campaign        # You can set target as the campaign or even instance if you want more details
-        )
-        logger.info(f"Notification sent for MeetupSchedule id {instance.id}")
+#         # Notify the winner that the influencer has scheduled a meetup.
+#         push_notification(
+#             actor=instance.influencer,      # The influencer schedules the meetup
+#             recipient=instance.winner,        # The winner should be notified
+#             verb="scheduled a meetup with you",  # Customize the message as needed
+#             target=instance.campaign        # You can set target as the campaign or even instance if you want more details
+#         )
+#         logger.info(f"Notification sent for MeetupSchedule id {instance.id}")
 
-        # ------------------------------
-        # 2. Optionally, Create an Automatic Message
-        # ------------------------------
-        try:
-            # Find the conversation between influencer and winner.
-            # This example assumes that if a conversation exists with exactly these two participants, it should be used.
-            conversation = Conversation.objects.filter(
-                participants=instance.influencer
-            ).filter(
-                participants=instance.winner
-            ).first()
+#         # ------------------------------
+#         # 2. Optionally, Create an Automatic Message
+#         # ------------------------------
+#         try:
+#             # Find the conversation between influencer and winner.
+#             # This example assumes that if a conversation exists with exactly these two participants, it should be used.
+#             conversation = Conversation.objects.filter(
+#                 participants=instance.influencer
+#             ).filter(
+#                 participants=instance.winner
+#             ).first()
 
-            if conversation:
-                # Create the message content.
-                message_content = (
-                    f"Meetup scheduled on {instance.scheduled_datetime.strftime('%Y-%m-%d %H:%M')} at {instance.location}."
-                )
-                # Create a new message from the influencer.
-                message = Message.objects.create(
-                    conversation=conversation,
-                    sender=instance.influencer,
-                    content=message_content
-                )
+#             if conversation:
+#                 # Create the message content.
+#                 message_content = (
+#                     f"Meetup scheduled on {instance.scheduled_datetime.strftime('%Y-%m-%d %H:%M')} at {instance.location}."
+#                 )
+#                 # Create a new message from the influencer.
+#                 message = Message.objects.create(
+#                     conversation=conversation,
+#                     sender=instance.influencer,
+#                     content=message_content
+#                 )
 
-                # Use the channels layer to broadcast this message to the conversation.
-                channel_layer = get_channel_layer()
-                async_to_sync(channel_layer.group_send)(
-                    f"conversation_{conversation.id}",  # group name based on conversation id
-                    {
-                        "type": "chat_message",          # this should match your consumer's method name
-                        "message": message_content,
-                        "user_id": instance.influencer.id,
-                        "username": instance.influencer.username,
-                        "status": message.status,        # Typically "sent"
-                        "message_id": message.id,
-                    }
-                )
-                logger.info(f"Automatic message sent in conversation {conversation.id}")
-            else:
-                logger.warning(
-                    f"No conversation found between {instance.influencer.username} and {instance.winner.username}."
-                )
-        except Exception as e:
-            logger.error(f"Error while sending automatic message: {str(e)}")
+#                 # Use the channels layer to broadcast this message to the conversation.
+#                 channel_layer = get_channel_layer()
+#                 async_to_sync(channel_layer.group_send)(
+#                     f"conversation_{conversation.id}",  # group name based on conversation id
+#                     {
+#                         "type": "chat_message",          # this should match your consumer's method name
+#                         "message": message_content,
+#                         "user_id": instance.influencer.id,
+#                         "username": instance.influencer.username,
+#                         "status": message.status,        # Typically "sent"
+#                         "message_id": message.id,
+#                     }
+#                 )
+#                 logger.info(f"Automatic message sent in conversation {conversation.id}")
+#             else:
+#                 logger.warning(
+#                     f"No conversation found between {instance.influencer.username} and {instance.winner.username}."
+#                 )
+#         except Exception as e:
+#             logger.error(f"Error while sending automatic message: {str(e)}")
