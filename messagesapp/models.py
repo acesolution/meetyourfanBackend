@@ -153,5 +153,21 @@ class MeetupSchedule(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['campaign', 'influencer', 'winner'],
+                condition=Q(status__in=['pending', 'accepted']),
+                name='uniq_active_meetup_per_campaign_triplet',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['campaign', 'winner', 'status']),
+            models.Index(fields=['influencer', 'winner', 'status']),
+        ]
+    
     def __str__(self):
         return f"Meetup for campaign {self.campaign.id} between {self.influencer.username} and {self.winner.username}"
+    
+    
+    
