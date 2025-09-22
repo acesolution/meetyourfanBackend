@@ -56,6 +56,11 @@ class CampaignBasicSerializer(serializers.ModelSerializer):
 
 
 
+class MeetupInlineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MeetupSchedule
+        fields = ("id", "scheduled_datetime", "location", "status")
+
 
 class ConversationSerializer(serializers.ModelSerializer):
     participants = serializers.SerializerMethodField()
@@ -63,7 +68,8 @@ class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     unread_ids = serializers.SerializerMethodField() 
     campaign = CampaignBasicSerializer(read_only=True)
-    is_blocked = serializers.SerializerMethodField()     
+    is_blocked = serializers.SerializerMethodField()    
+    active_meetup = serializers.SerializerMethodField() 
     
     class Meta:
         model = Conversation
@@ -78,6 +84,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'last_message', 
             'unread_ids',
             'is_blocked',
+            'active_meetup',
         )
         
     def get_unread_message_count(self, obj):
@@ -149,6 +156,37 @@ class ConversationSerializer(serializers.ModelSerializer):
         peer = others.first()
         return BlockedUsers.objects.filter(blocker=request.user, blocked=peer).exists()
 
+    def get_active_meetup(self, obj):
+        """
+        Return the currently relevant meetup (pending or accepted) between the
+        campaign influencer and the peer in this winner conversation.
+        """
+        try:
+            if obj.category != "winner" or not obj.campaign:
+                return None
+            influencer = obj.campaign.user
+            # peer = the non-influencer participant
+            peer_qs = obj.participants.exclude(id=influencer.id)
+            if not peer_qs.exists():
+                return None
+            winner = peer_qs.first()
+            meetup = (
+                MeetupSchedule.objects
+                .filter(
+                    campaign=obj.campaign,
+                    influencer=influencer,
+                    winner=winner,
+                    status__in=["pending", "accepted"],
+                )
+                .order_by("-updated_at")
+                .first()
+            )
+            if not meetup:
+                return None
+            return MeetupInlineSerializer(meetup, context=self.context).data
+        except Exception:
+            # Be defensive; never break the conversations list
+            return None
     
 
 class MessageSerializer(serializers.ModelSerializer):

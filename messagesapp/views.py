@@ -499,14 +499,6 @@ class AddParticipantsView(APIView):
     
     
 class ScheduleMeetupView(APIView):
-    """
-    Allows an influencer to schedule a meetup with a campaign winner.
-    Expects:
-      - campaign_id
-      - winner_id
-      - scheduled_datetime (ISO 8601 string)
-      - location
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -514,55 +506,61 @@ class ScheduleMeetupView(APIView):
         if user.user_type != 'influencer':
             return Response({"error": "Only influencers can schedule meetups."},
                             status=status.HTTP_403_FORBIDDEN)
-                            
+
         campaign_id = request.data.get("campaign_id")
         winner_id = request.data.get("winner_id")
         scheduled_datetime_str = request.data.get("scheduled_datetime")
         location = request.data.get("location")
-        
+
         if not (campaign_id and winner_id and scheduled_datetime_str and location):
             return Response({"error": "campaign_id, winner_id, scheduled_datetime, and location are required."},
                             status=status.HTTP_400_BAD_REQUEST)
-        
-        # Parse scheduled_datetime
+
         scheduled_datetime = parse_datetime(scheduled_datetime_str)
         if scheduled_datetime is None:
-            return Response({"error": "Invalid scheduled_datetime format."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Ensure the campaign exists and belongs to the influencer.
+            return Response({"error": "Invalid scheduled_datetime format."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         campaign = get_object_or_404(Campaign, id=campaign_id, user=user)
-        
-        # Get the winner user.
         winner = get_object_or_404(User, id=winner_id)
-        
-        # Create the meetup schedule.
-        meetup = MeetupSchedule.objects.create(
-            campaign=campaign,
-            influencer=user,
-            winner=winner,
-            scheduled_datetime=scheduled_datetime,
-            location=location,
-            status='pending'
-        )
-        
-        # Push a notification to the winner.
-        push_notification(
-            actor=user,  # influencer schedules the meetup
-            recipient=winner,
-            verb="scheduled a meetup with you",
-            target=meetup  # You can customize how the target is displayed.
-        )
-        
+
+        with transaction.atomic():
+            existing = MeetupSchedule.objects.select_for_update().filter(
+                campaign=campaign, influencer=user, winner=winner,
+                status__in=['pending', 'accepted']
+            ).first()
+
+            if existing:
+                if existing.status == 'accepted':
+                    return Response(
+                        {"error": "This meetup is already accepted. Ask the winner to cancel before rescheduling."},
+                        status=status.HTTP_409_CONFLICT
+                    )
+                # pending → update (reschedule)
+                existing.scheduled_datetime = scheduled_datetime
+                existing.location = location
+                existing.save()
+                meetup = existing
+                created = False
+            else:
+                meetup = MeetupSchedule.objects.create(
+                    campaign=campaign,
+                    influencer=user,
+                    winner=winner,
+                    scheduled_datetime=scheduled_datetime,
+                    location=location,
+                    status='pending'
+                )
+                created = True
+
+        # Notify winner
+        verb = "rescheduled a meetup with you" if not created else "scheduled a meetup with you"
+        push_notification(actor=user, recipient=winner, verb=verb, target=meetup)
+
         serializer = MeetupScheduleSerializer(meetup, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+        return Response(serializer.data, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
     
 class RespondToMeetupView(APIView):
-    """
-    Allows the winner to respond to a meetup invitation.
-    Expects:
-      - response: "accepted" or "rejected"
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, meetup_id):
@@ -571,20 +569,27 @@ class RespondToMeetupView(APIView):
         if response_value not in ['accepted', 'rejected']:
             return Response({"error": "Response must be either 'accepted' or 'rejected'."},
                             status=status.HTTP_400_BAD_REQUEST)
-        
-        # Ensure the authenticated user is the winner for this meetup.
-        meetup = get_object_or_404(MeetupSchedule, id=meetup_id, winner=user)
-        
-        meetup.status = response_value
-        meetup.save()
-        
-        # Notify the influencer about the response.
-        push_notification(
-            actor=user,  # the winner is responding
-            recipient=meetup.influencer,
-            verb=f"{response_value} your meetup invitation",
-            target=meetup
-        )
-        
-        return Response({"message": f"Meetup invitation {response_value}."}, status=status.HTTP_200_OK)
 
+        meetup = get_object_or_404(MeetupSchedule, id=meetup_id, winner=user)
+
+        if response_value == 'accepted':
+            if meetup.status == 'accepted':
+                return Response({"message": "Already accepted."}, status=status.HTTP_200_OK)
+            meetup.status = 'accepted'
+            meetup.save()
+            push_notification(actor=user, recipient=meetup.influencer,
+                              verb="accepted your meetup invitation", target=meetup)
+            return Response({
+                "message": "Meetup invitation accepted.",
+                "meetup": MeetupScheduleSerializer(meetup, context={'request': request}).data
+            }, status=status.HTTP_200_OK)
+
+        # rejected → persist state (does NOT violate your uniqueness constraint)
+        meetup.status = 'rejected'
+        meetup.save()
+        push_notification(actor=user, recipient=meetup.influencer,
+                          verb="rejected your meetup invitation", target=meetup)
+        return Response({
+            "message": "Meetup invitation rejected.",
+            "meetup": MeetupScheduleSerializer(meetup, context={'request': request}).data
+        }, status=status.HTTP_200_OK)
