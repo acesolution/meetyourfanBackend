@@ -28,6 +28,6 @@ urlpatterns = [
     path('campaign/', include('campaign.urls')),
     path('api/messages/', include('messagesapp.urls')),
     path('api/notifications/', include('notificationsapp.urls')),
-    path('api/socal-logins/', include('sociallogins.urls')),
+    path('api/social-logins/', include('sociallogins.urls')),
     path('api/blockchain/', include('blockchain.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
