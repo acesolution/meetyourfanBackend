@@ -84,7 +84,8 @@ INSTALLED_APPS = [
     'notificationsapp',
     'base',
     'blockchain.apps.BlockchainConfig',
-    "storages"
+    "storages",
+    "sociallogins",
 ]
 
 MIDDLEWARE = [
