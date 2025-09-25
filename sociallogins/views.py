@@ -1,17 +1,43 @@
-# sociallogins/views.py (only the callback changed)
-import os, requests
-from urllib.parse import urlencode
-from django.shortcuts import redirect
-from django.http import HttpResponseBadRequest
-from django.contrib.auth import get_user_model, login
-from django.urls import reverse
-from django.db import transaction
+# sociallogins/views.py
+import os
+import requests                                     # third-party HTTP client
+from urllib.parse import urlencode                  # built-in: dict -> querystring
+from django.shortcuts import redirect               # built-in: HTTP 302 helper
+from django.http import HttpResponseBadRequest      # built-in: quick 400 response
+from django.contrib.auth import get_user_model, login  # built-in: auth helpers
+from django.urls import reverse                     # built-in: build URL by name
+from django.db import transaction                   # built-in: atomic DB writes
 from .models import SocialProfile
 
 GRAPH = os.getenv("META_GRAPH_URL", "https://graph.facebook.com/v19.0")
 APP_ID = os.environ["META_APP_ID"]
 APP_SECRET = os.environ["META_APP_SECRET"]
-DEBUG_IG = os.getenv("IG_DEBUG", "0") == "1"   # set IG_DEBUG=1 to log extra details
+DEBUG_IG = os.getenv("IG_DEBUG", "0") == "1"        # set IG_DEBUG=1 to log responses
+
+def _abs_redirect_uri(request):
+    """
+    Build the absolute callback URL.
+    - reverse(): Django built-in that returns '/auth/instagram/callback'
+    - build_absolute_uri(): Django built-in that prefixes with scheme+host to make it absolute
+    """
+    return request.build_absolute_uri(reverse("ig-login-callback"))
+
+def ig_login_start(request):
+    """
+    Start Instagram Business Login (Meta OAuth).
+    - urlencode(): stdlib helper that safely encodes a dict for a query string
+    - redirect(): Django built-in that returns a 302 to the OAuth dialog URL
+    """
+    params = {
+        "client_id": APP_ID,
+        "redirect_uri": _abs_redirect_uri(request),
+        "response_type": "code",
+        "scope": "instagram_basic,pages_show_list",    # minimum to resolve Page -> IG
+        "auth_type": "rerequest",                      # re-prompt if user unchecked before
+        "state": "csrf_or_signed_payload",             # TODO: sign & verify in prod
+    }
+    url = f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
+    return redirect(url)  # built-in: sends HTTP 302
 
 def ig_login_callback(request):
     if request.GET.get("error"):
