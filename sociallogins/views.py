@@ -1,189 +1,133 @@
 # sociallogins/views.py
 import os
-import logging                                      # ← use python logging (built-in)
-import requests
-from urllib.parse import urlencode                  # built-in: dict -> querystring
-from django.shortcuts import redirect               # built-in: HTTP 302 helper
-from django.http import HttpResponseBadRequest      # built-in: quick 400 response
-from django.contrib.auth import get_user_model, login
-from django.urls import reverse
-from django.db import transaction
-from .models import SocialProfile
+import secrets                                 # built-in: cryptographically strong tokens
+import requests                                # 3rd-party HTTP client for API calls
+from urllib.parse import urlencode             # built-in: dict -> querystring
+from django.http import HttpResponseBadRequest, HttpResponseRedirect
+# HttpResponseRedirect is a built-in 302 response class
+from django.shortcuts import redirect          # built-in shortcut to return 302
+from django.urls import reverse                # built-in: resolve view name -> path
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth import get_user_model
+from django.conf import settings
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from datetime import datetime, timedelta       # built-in: token expiry helpers
+from django.utils import timezone              # built-in: timezone-aware now()
 
-logger = logging.getLogger(__name__)                # ← module logger (inherits Django config)
+User = get_user_model()
 
-GRAPH = os.getenv("META_GRAPH_URL", "https://graph.facebook.com/v19.0")
-APP_ID = os.environ["META_APP_ID"]
-APP_SECRET = os.environ["META_APP_SECRET"]
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://meetyourfan.io")
-DEBUG_IG = os.getenv("IG_DEBUG", "0") == "1"        # set IG_DEBUG=1 to include DEBUG logs
-REQ_TIMEOUT = float(os.getenv("IG_HTTP_TIMEOUT", "8.0"))  # seconds
+IG_AUTH_URL = "https://api.instagram.com/oauth/authorize"
+IG_TOKEN_URL = "https://api.instagram.com/oauth/access_token"  # short-lived exchange
+# Long-lived exchange + refresh are on graph.instagram.com
+IG_LONG_LIVED_URL = "https://graph.instagram.com/access_token"
+IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
+IG_ME_URL = "https://graph.instagram.com/me"  # identity/profile
 
 def _abs_redirect_uri(request):
-    """reverse() + build_absolute_uri() build the absolute callback URL (both are Django built-ins)."""
+    """
+    reverse() + build_absolute_uri() produces an absolute callback URL.
+    - reverse(name) -> '/social/instagram/callback/' (Django URL resolver, built-in)
+    - request.build_absolute_uri(path) -> 'https://api.example.com/social/...'
+    """
     return request.build_absolute_uri(reverse("ig-login-callback"))
 
-def _fe(path, params=None):
-    """Helper: redirect to frontend (Next.js) with optional query string."""
-    qs = f"?{urlencode(params)}" if params else ""
-    return redirect(f"{FRONTEND_ORIGIN}{path}{qs}")
+def instagram_start(request):
+    # Generate anti-CSRF state (built-in secrets.token_urlsafe)
+    state = secrets.token_urlsafe(32)
+    # Store state in the session (built-in request.session behaves like a dict)
+    request.session["ig_oauth_state"] = state
 
-def _safe_tail(token: str, n: int = 8) -> str:
-    """Return last n chars of a token for correlation without leaking secrets (built-in slicing)."""
-    if not token:
-        return ""
-    return token[-n:]
-
-def ig_login_start(request):
-    """Start Instagram Business Login (Meta OAuth)."""
     params = {
-        "client_id": APP_ID,
-        "redirect_uri": _abs_redirect_uri(request),
+        "app_id": settings.INSTAGRAM_APP_ID,
+        "redirect_uri": settings.INSTAGRAM_REDIRECT_URI or _abs_redirect_uri(request),
+        "scope": "instagram_basic",  # request more only as needed
         "response_type": "code",
-        "scope": "instagram_basic,pages_show_list",
-        "auth_type": "rerequest",                    # re-prompt if user unchecked before
-        "state": "csrf_or_signed_payload",           # TODO: sign & verify in prod
+        "state": state,
     }
-    url = f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
-    logger.info("IG login start → redirecting to Meta OAuth", extra={"oauth_url": "facebook.com/dialog/oauth"})
-    return redirect(url)
+    # urlencode() turns dict -> properly escaped query string (?a=1&b=2)
+    url = f"{IG_AUTH_URL}?{urlencode(params)}"
+    return redirect(url)  # built-in shortcut to send 302 to Instagram
 
-def ig_login_callback(request):
-    """Handle Meta redirect, exchange code → token, resolve IG via Page, persist user, redirect FE."""
-    if request.GET.get("error"):
-        err = request.GET.get("error")
-        logger.warning("IG callback with error from Meta", extra={"error": err})
-        return _fe("/authentication/login", {"error": err})
-
+@api_view(["GET"])
+def instagram_callback(request):
+    # Read query params (request.GET is a built-in dict-like QueryDict)
     code = request.GET.get("code")
-    if not code:
-        logger.warning("IG callback missing code")
-        return HttpResponseBadRequest("Missing code")
+    state = request.GET.get("state")
+    saved_state = request.session.get("ig_oauth_state")
 
-    redirect_uri = _abs_redirect_uri(request)
+    if not code or not state or state != saved_state:
+        return Response({"detail": "Invalid OAuth state/code."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 1) Exchange code -> user token (server-side uses APP_SECRET)
-    try:
-        token_json = requests.get(
-            f"{GRAPH}/oauth/access_token",
-            params={"client_id": APP_ID, "client_secret": APP_SECRET, "redirect_uri": redirect_uri, "code": code},
-            timeout=REQ_TIMEOUT,
-        ).json()
-    except requests.RequestException as e:
-        logger.exception("Token exchange request failed")
-        return _fe("/authentication/login", {"error": "token_exchange_http_error"})
+    # 1) Exchange code -> short-lived token (expires ~1 hour)
+    # Docs: https://developers.facebook.com/docs/instagram-platform/reference/access_token/
+    data = {
+        "app_id": settings.INSTAGRAM_APP_ID,
+        "app_secret": settings.INSTAGRAM_APP_SECRET,
+        "grant_type": "authorization_code",
+        "redirect_uri": settings.INSTAGRAM_REDIRECT_URI or _abs_redirect_uri(request),
+        "code": code,
+    }
+    token_resp = requests.post(IG_TOKEN_URL, data=data)
+    tok = token_resp.json()
+    if "access_token" not in tok:
+        return Response({"detail": "Failed to get short-lived token", "raw": tok}, status=400)
 
-    user_token = token_json.get("access_token")
-    if DEBUG_IG:
-        logger.debug("TOKEN_EXCHANGE", extra={"ok": bool(user_token), "token_tail": _safe_tail(user_token)})
-    if not user_token:
-        logger.error("Token exchange did not return access_token", extra={"resp": token_json})
-        return _fe("/authentication/login", {"error": "token_exchange_failed"})
+    short_token = tok["access_token"]
 
-    # 1b) Inspect scopes carried by this token (/debug_token)
-    app_token = f"{APP_ID}|{APP_SECRET}"  # app access token format
-    try:
-        dbg = requests.get(
-            f"{GRAPH}/debug_token",
-            params={"input_token": user_token, "access_token": app_token},
-            timeout=REQ_TIMEOUT,
-        ).json()
-    except requests.RequestException:
-        logger.exception("debug_token call failed")
-        return _fe("/authentication/login", {"error": "debug_token_failed"})
+    # 2) Exchange short-lived -> long-lived (valid ~60 days)
+    # GET graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=...&access_token=...
+    # Docs: long-lived & refresh endpoints
+    ll_params = {
+        "grant_type": "ig_exchange_token",
+        "client_secret": settings.INSTAGRAM_APP_SECRET,
+        "access_token": short_token,
+    }
+    ll_resp = requests.get(IG_LONG_LIVED_URL, params=ll_params)
+    ll = ll_resp.json()
+    if "access_token" not in ll:
+        return Response({"detail": "Failed to get long-lived token", "raw": ll}, status=400)
 
-    scopes = set(dbg.get("data", {}).get("scopes") or [])
-    if DEBUG_IG:
-        logger.debug("DEBUG_TOKEN", extra={"scopes": sorted(scopes), "token_tail": _safe_tail(user_token)})
+    long_token = ll["access_token"]
+    # Optional: tokens sometimes include 'expires_in' seconds
+    expires_at = timezone.now() + timedelta(days=59)
 
-    # 1c) Optional: see explicit grant/decline flags
-    try:
-        perms = requests.get(f"{GRAPH}/me/permissions", params={"access_token": user_token}, timeout=REQ_TIMEOUT).json()
-    except requests.RequestException:
-        perms = {}
-        logger.exception("me/permissions call failed")
-    if DEBUG_IG:
-        logger.debug("ME_PERMISSIONS", extra={"perms": perms})
+    # 3) Get user profile (id, username)
+    me_params = {
+        "fields": "id,username,account_type",  # account_type helps enforce 'professional'
+        "access_token": long_token,
+    }
+    me_resp = requests.get(IG_ME_URL, params=me_params)
+    me = me_resp.json()
+    if "id" not in me:
+        return Response({"detail": "Failed to fetch IG profile", "raw": me}, status=400)
 
-    # 2) List Pages (requires pages_show_list; user must be Page admin)
-    try:
-        pages_json = requests.get(
-            f"{GRAPH}/me/accounts",
-            params={"access_token": user_token, "fields": "id,name,access_token,perms"},
-            timeout=REQ_TIMEOUT,
-        ).json()
-    except requests.RequestException:
-        logger.exception("me/accounts call failed")
-        return _fe("/connect-instagram", {"status": "no_pages", "why": "http_error"})
+    ig_id = str(me["id"])
+    username = me.get("username", f"ig_{ig_id}")
+    account_type = me.get("account_type", "")
 
-    pages = pages_json.get("data", [])
-    if DEBUG_IG:
-        logger.debug("ME_ACCOUNTS", extra={"count": len(pages), "token_tail": _safe_tail(user_token)})
+    # Enforce Professional accounts if your use-case requires it
+    if account_type not in {"BUSINESS", "CREATOR"}:
+        return Response({"detail": "Instagram Professional account required."}, status=403)
 
-    if not pages:
-        reasons = []
-        if "pages_show_list" not in scopes:
-            reasons.append("missing pages_show_list")
-        reasons.append("no page selected or not an admin")
-        why = ",".join(reasons)
-        logger.info("No pages visible to token", extra={"why": why, "token_tail": _safe_tail(user_token)})
-        return _fe("/connect-instagram", {"status": "no_pages", "why": why})
+    # 4) Get-or-create local user
+    user, _ = User.objects.get_or_create(
+        username=f"ig_{username}",
+        defaults={"email": "",},  # fill as needed
+    )
+    # Store tokens on a related model (pseudo code)
+    # SocialProfile.objects.update_or_create(
+    #     user=user, provider="instagram",
+    #     defaults={"provider_uid": ig_id, "access_token": long_token, "token_expires_at": expires_at},
+    # )
 
-    # 3) Resolve IG by asking BOTH possible Page fields
-    ig_user_id = ig_username = None
-    for page in pages:  # for-loop: built-in iterator
-        page_id = page["id"]
-        fields = (
-            "instagram_business_account{username,id},"
-            "connected_instagram_account{username,id}"
-        )
-        try:
-            pr = requests.get(
-                f"{GRAPH}/{page_id}",
-                params={"access_token": page["access_token"], "fields": fields},
-                timeout=REQ_TIMEOUT,
-            ).json()
-        except requests.RequestException:
-            logger.exception("page fields call failed", extra={"page_id": page_id})
-            continue
+    # 5) Issue your app token (DRF SimpleJWT example)
+    from rest_framework_simplejwt.tokens import RefreshToken  # third-party: JWT util
+    refresh = RefreshToken.for_user(user)  # creates a signed JWT pair for this user
 
-        node = (pr.get("instagram_business_account") or pr.get("connected_instagram_account") or {})
-        if DEBUG_IG:
-            logger.debug("PAGE_FIELDS", extra={"page_id": page_id, "has_iba": bool(pr.get("instagram_business_account")),
-                                               "has_cia": bool(pr.get("connected_instagram_account"))})
-
-        if node.get("id"):
-            ig_user_id = node["id"]
-            ig_username = node.get("username")
-            # sometimes username is not inlined; fetch it by IG id
-            if not ig_username:
-                try:
-                    ig_info = requests.get(
-                        f"{GRAPH}/{ig_user_id}",
-                        params={"access_token": user_token, "fields": "username"},
-                        timeout=REQ_TIMEOUT,
-                    ).json()
-                    ig_username = ig_info.get("username")
-                except requests.RequestException:
-                    logger.exception("ig user lookup failed", extra={"ig_user_id": ig_user_id})
-            break  # built-in: exit loop once found
-
-    if not ig_user_id:
-        logger.info("Page found but no connected IG", extra={"pages": len(pages)})
-        return _fe("/connect-instagram", {"status": "no_connected_ig"})
-
-    # 4) Persist + login
-    User = get_user_model()
-    with transaction.atomic():  # built-in: commit/rollback as one unit
-        user, _ = User.objects.get_or_create(  # built-in: SELECT-or-INSERT atomically
-            username=f"ig_{ig_user_id}",
-            defaults={"first_name": ig_username or ""},
-        )
-        prof, _ = SocialProfile.objects.get_or_create(user=user)
-        prof.ig_user_id = ig_user_id
-        prof.ig_username = ig_username
-        prof.save()
-
-    login(request, user)  # built-in: attach user to session
-    logger.info("IG login success", extra={"user": user.pk, "ig_user_id": ig_user_id, "ig_username": ig_username})
-    return _fe("/dashboard")
+    # 6) Redirect back to FE with HttpOnly cookie (safer than query param)
+    resp = HttpResponseRedirect(f"{settings.FRONTEND_ORIGIN}/auth/callback")
+    # set_cookie is a built-in HttpResponse method
+    resp.set_cookie("auth_token", str(refresh.access_token), httponly=True, secure=True, samesite="Lax")
+    return resp

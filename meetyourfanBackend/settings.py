@@ -304,6 +304,17 @@ INSTAGRAM_REDIRECT_URI = os.environ['INSTAGRAM_REDIRECT_URI']
 META_APP_ID = os.environ['META_APP_ID']
 META_APP_SECRET = os.environ['META_APP_SECRET']
 
+
+INSTAGRAM_APP_ID = os.environ["INSTAGRAM_APP_ID"]
+INSTAGRAM_APP_SECRET = os.environ["INSTAGRAM_APP_SECRET"]
+# This must EXACTLY match the redirect URI you register in the Meta app
+INSTAGRAM_REDIRECT_URI = os.environ.get(
+    "INSTAGRAM_REDIRECT_URI",
+    "https://api.meetyourfan.io/social/instagram/callback/",
+)
+
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "https://meetyourfan.io")
+
 # (1) read the secret _name_ from your env or hard‐code:
 AWS_PRIVATE_KEY_SECRET = os.environ.get(
     "AWS_PRIVATE_KEY_SECRET", 
