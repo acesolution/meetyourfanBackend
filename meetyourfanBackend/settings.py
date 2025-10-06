@@ -9,9 +9,6 @@ import os
 from datetime import timedelta
 import ssl
 from dotenv import load_dotenv
-
-# ─── AWS Secrets Manager helper ───────────────────────────────────────────────
-
 import boto3
 from botocore.exceptions import ClientError
 

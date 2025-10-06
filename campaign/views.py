@@ -925,24 +925,29 @@ class WinnersView(APIView):
     def get(self, request, campaign_id):
         try:
             campaign = Campaign.objects.get(id=campaign_id)
-
-            # Ensure winners have been selected
-            if not campaign.winners_selected:
-                return Response(
-                    {"error": "Winners have not been selected yet."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            # Fetch winners from CampaignWinner table
-            winners = CampaignWinner.objects.filter(campaign=campaign)
-            serializer = CampaignWinnerSerializer(winners, many=True)
-
-            return Response({"winners": serializer.data}, status=status.HTTP_200_OK)
         except Campaign.DoesNotExist:
-            return Response(
-                {"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # If winners not selected yet, return empty list instead of 400
+        if not campaign.winners_selected:
+            return Response({
+                "winners": [],
+                "winners_selected": False,
+                "is_closed": campaign.is_closed,
+                "winner_slots": campaign.winner_slots,
+                "winners_count": 0,
+            }, status=status.HTTP_200_OK)
+
+        winners_qs = CampaignWinner.objects.filter(campaign=campaign).select_related('fan', 'fan__profile')
+        serializer = CampaignWinnerSerializer(winners_qs, many=True)
+
+        return Response({
+            "winners": serializer.data,
+            "winners_selected": True,
+            "is_closed": campaign.is_closed,
+            "winner_slots": campaign.winner_slots,
+            "winners_count": winners_qs.count(),
+        }, status=status.HTTP_200_OK)
 
 class ExploreCampaignsView(APIView):
     permission_classes = [AllowAny]
