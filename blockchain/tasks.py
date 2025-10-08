@@ -131,13 +131,22 @@ def save_influencer_transaction_info(
     user_id: int,
     campaign_id: int,
     influencer_id: int,
-    transaction_type: str,
+    tx_type: str,
     tt_amount: int,
     credits_delta: int,
+    **kwargs,
 ):
     """
     Fetch on‑chain details for an influencer payout/hold/refund and save InfluencerTransaction.
     """
+    
+    # support both param names
+    transaction_type = tx_type or kwargs.get("transaction_type")
+    
+    # Guard: if neither was provided, fail loudly (prevents silent bad rows)
+    if not transaction_type:
+        raise ValueError("tx_type/transaction_type is required")
+    
     try:
         details = fetch_tx_details(tx_hash)
     except TransactionNotFound as exc:
@@ -145,7 +154,9 @@ def save_influencer_transaction_info(
     
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
+    
     safe_details = _sanitize_details_for_model(details, InfluencerTransaction)
+    
     InfluencerTransaction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
