@@ -117,12 +117,12 @@ class Transaction(OnChainBase):
     )
     tt_amount     = models.DecimalField(
         max_digits=30,
-        decimal_places=0,
+        decimal_places=2,
         help_text="Raw TT units moved on‑chain"
     )
     credits_delta = models.DecimalField(
         max_digits=30,
-        decimal_places=0,
+        decimal_places=2,
         help_text="+ for mint/deposit, – for burn/spend"
     )
     email_verified = models.BooleanField(
@@ -133,6 +133,9 @@ class Transaction(OnChainBase):
         default=False,
         help_text="If buyer’s phone was verified at time of TX"
     )
+    # (optional but recommended) exact on-chain integers for audit/recalc
+    tt_amount_wei     = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
+    credits_delta_wei = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
 
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']
@@ -161,14 +164,18 @@ class InfluencerTransaction(OnChainBase):
     )
     tt_amount     = models.DecimalField(
         max_digits=30,
-        decimal_places=0,
+        decimal_places=2,
         help_text="Raw TT units moved"
     )
     credits_delta = models.DecimalField(
         max_digits=30,
-        decimal_places=0,
+        decimal_places=2,
         help_text="+ credits for release, − for hold/refund"
     )
+    
+    # (optional but recommended) exact on-chain integers for audit/recalc
+    tt_amount_wei     = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
+    credits_delta_wei = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
 
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']

@@ -12,6 +12,19 @@ from .models import Transaction, InfluencerTransaction, OnChainAction
 from typing import Optional
 from web3.exceptions import TransactionNotFound
 from django.contrib.auth import get_user_model
+from decimal import Decimal, ROUND_DOWN
+
+def _from_wei(value_wei: int, token_decimals: int = 18, places: int = 2) -> Decimal:
+    """
+    Convert an integer 'wei-like' amount to Decimal with fixed scale.
+    - built-in Decimal: base-10 exact arithmetic (no float rounding surprises)
+    - quantize('0.01'): clamp to two decimals
+    - ROUND_DOWN: never round up money on release/refund
+    """
+    d = Decimal(int(value_wei)) / (Decimal(10) ** token_decimals)  # int() is built-in: ensure pure integer division base
+    q = Decimal("0.01") if places == 2 else Decimal("1").scaleb(-places)  # built-in scaleb(): shift decimal point
+    return d.quantize(q, rounding=ROUND_DOWN)
+
 
 User = get_user_model()
 
@@ -95,6 +108,9 @@ def save_transaction_info(
     credits_delta: int,
     email_verified: bool = False,
     phone_verified: bool = False,
+    tt_amount_wei: str = None,
+    credits_delta_wei: str = None,
+    **kwargs,                            # built-in: collect any future args
 ):
     """
     Fetch on‑chain details for a user transaction and save Transaction model.
@@ -109,6 +125,18 @@ def save_transaction_info(
     # normalize incoming hash so downstream logic always gets 0x-prefixed
     tx_hash = _ensure_prefixed(tx_hash)
     safe_details = _sanitize_details_for_model(details, Transaction)
+    
+    # Parse strings into Decimal and clamp to 2dp
+    def _to_2dp(s: str) -> Decimal:
+        d = Decimal(str(s))                         # built-in str(): guard against non-Decimal inputs
+        return d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    tt_amount_dec     = _to_2dp(tt_amount)
+    credits_delta_dec = _to_2dp(credits_delta)
+
+    # Optional raw exact amounts (as Decimals with 0 scale)
+    tt_wei_dec = Decimal(str(tt_amount_wei)) if tt_amount_wei is not None else None
+    cr_wei_dec = Decimal(str(credits_delta_wei)) if credits_delta_wei is not None else None
 
     # Django ORM .objects.create(): INSERT a new row with the given fields
     Transaction.objects.create(
@@ -118,10 +146,12 @@ def save_transaction_info(
         tx_hash=tx_hash,
         **safe_details,                     # unpack block_number, gas_used, etc.
         tx_type=tx_type,
-        tt_amount=tt_amount,
-        credits_delta=credits_delta,
+        tt_amount=tt_amount_dec,
+        credits_delta=credits_delta_dec,
         email_verified=email_verified,
         phone_verified=phone_verified,
+        tt_amount_wei=tt_wei_dec,
+        credits_delta_wei=cr_wei_dec,
     )
 
 @shared_task(bind=True, max_retries=5, default_retry_delay=30)
@@ -134,6 +164,8 @@ def save_influencer_transaction_info(
     tx_type: str,
     tt_amount: int,
     credits_delta: int,
+    tt_amount_wei: str = None,
+    credits_delta_wei: str = None,
     **kwargs,
 ):
     """
@@ -157,6 +189,18 @@ def save_influencer_transaction_info(
     
     safe_details = _sanitize_details_for_model(details, InfluencerTransaction)
     
+    # Parse strings into Decimal and clamp to 2dp
+    def _to_2dp(s: str) -> Decimal:
+        d = Decimal(str(s))                         # built-in str(): guard against non-Decimal inputs
+        return d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    tt_amount_dec     = _to_2dp(tt_amount)
+    credits_delta_dec = _to_2dp(credits_delta)
+
+    # Optional raw exact amounts (as Decimals with 0 scale)
+    tt_wei_dec = Decimal(str(tt_amount_wei)) if tt_amount_wei is not None else None
+    cr_wei_dec = Decimal(str(credits_delta_wei)) if credits_delta_wei is not None else None
+    
     InfluencerTransaction.objects.create(
         user_id=user_id,
         campaign_id=campaign_id,
@@ -165,8 +209,10 @@ def save_influencer_transaction_info(
         **safe_details,
         influencer_id=influencer_id,
         tx_type=transaction_type,
-        tt_amount=tt_amount,
-        credits_delta=credits_delta,
+        tt_amount=tt_amount_dec,
+        credits_delta=credits_delta_dec,
+        tt_amount_wei=tt_wei_dec,
+        credits_delta_wei=cr_wei_dec,
     )
 
 @shared_task(bind=True, max_retries=5, default_retry_delay=30)
@@ -263,8 +309,8 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
                 wei_cr    = ev.args['creditAmountWei']
 
                 # ── CONVERSION ──
-                tt_amount = _wei_to_single_decimal(wei_tt)
-                cr_amount = _wei_to_single_decimal(wei_cr)
+                tt_amount = _from_wei(wei_tt, places=2)
+                cr_amount = _from_wei(wei_cr, places=2)
 
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
@@ -274,6 +320,8 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     tx_type=InfluencerTransaction.RELEASE,
                     tt_amount=tt_amount,
                     credits_delta=cr_amount,
+                    tt_amount_wei=str(wei_tt),          
+                    credits_delta_wei=str(wei_cr),
                 )
 
                 recorded.append({
@@ -329,8 +377,8 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
                 wei_cr    = ev.args['creditAmountWei']
 
                 # ── CONVERSION ──
-                tt_amount = _wei_to_single_decimal(wei_tt)
-                cr_amount = _wei_to_single_decimal(wei_cr)
+                tt_amount = _from_wei(wei_tt, places=2)
+                cr_amount = _from_wei(wei_cr, places=2)
 
                 save_influencer_transaction_info.delay(
                     tx_hash=tx_hash,
@@ -340,6 +388,8 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     tx_type=InfluencerTransaction.REFUND,
                     tt_amount=tt_amount,
                     credits_delta=cr_amount,
+                    tt_amount_wei=str(wei_tt),          # keep exact on-chain integers
+                    credits_delta_wei=str(wei_cr),
                 )
 
                 recorded.append({
