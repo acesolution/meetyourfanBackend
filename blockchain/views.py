@@ -58,6 +58,89 @@ if not WERT_WEBHOOK_SECRET:
     raise RuntimeError("Missing WERT_WEBHOOK_SECRET in environment")
 
 
+DAILY_LIMIT_USDT = Decimal("500")  # product requirement
+
+def _sum_withdrawn_credits_for_date(user, day, include_pending=True) -> Decimal:
+    """
+    Sum *credits* withdrawn by `user` on date `day` (YYYY-MM-DD), as a positive Decimal.
+    If include_pending=True we count both PENDING and COMPLETED.
+    """
+    status_filter = ["pending", "completed"] if include_pending else ["completed"]
+    qs = (
+        Transaction.objects
+        .filter(
+            user=user,
+            tx_type=Transaction.WITHDRAW,
+            timestamp__date=day,
+            status__in=status_filter,
+        )
+        .annotate(abs_credits=Abs(F("credits_delta")))
+        .aggregate(total=Coalesce(Sum("abs_credits", output_field=DecimalField()), Value(0, output_field=DecimalField())))
+    )
+    return qs["total"] or Decimal(0)
+
+
+class DailyWithdrawUsageView(APIView):
+    """
+    GET /api/blockchain/withdraw/usage/?date=YYYY-MM-DD
+    Returns how much the user withdrew today (or on the given date),
+    plus remaining against the daily cap.
+
+    Response:
+    {
+      "date": "2025-03-12",
+      "limit": { "usdt": "500.00", "credits": "5000" },
+      "used":  { "usdt": "123.45", "credits": "1234.50" },
+      "remaining": { "usdt": "376.55", "credits": "3765.50" }
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # window date (defaults to *today* in server’s TZ)
+        day = request.query_params.get("date")
+        if day:
+            try:
+                day = timezone.datetime.fromisoformat(day).date()
+            except ValueError:
+                return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+        else:
+            day = timezone.localdate()
+
+        # conversion rate (credits per 1 USDT, e.g. 10)
+        conv_rate = Decimal(str(get_current_rate_wei()))
+
+        # limits in both units
+        limit_usdt    = DAILY_LIMIT_USDT
+        limit_credits = (limit_usdt * conv_rate)
+
+        # how much used today (sum of WITHDRAW credits)
+        used_credits = _sum_withdrawn_credits_for_date(request.user, day, include_pending=True)
+        used_usdt    = (used_credits / conv_rate).quantize(Decimal("0.01"))
+
+        # remaining
+        remaining_credits = (limit_credits - used_credits)
+        if remaining_credits < 0:
+            remaining_credits = Decimal(0)
+        remaining_usdt = (remaining_credits / conv_rate).quantize(Decimal("0.01"))
+
+        return Response({
+            "date": str(day),
+            "limit": {
+                "usdt":    f"{limit_usdt:.2f}",
+                "credits": str(limit_credits.normalize()),
+            },
+            "used": {
+                "usdt":    f"{used_usdt:.2f}",
+                "credits": str(used_credits.normalize()),
+            },
+            "remaining": {
+                "usdt":    f"{remaining_usdt:.2f}",
+                "credits": str(remaining_credits.normalize()),
+            },
+        })
+
+
 class ConversionRateView(APIView):
     
     def get(self, request, *args, **kwargs):
@@ -255,6 +338,38 @@ class WithdrawView(APIView):
         if verify_type == "phone" and not vc.withdraw_phone_verified:
             return Response({"error": "Phone not verified."},
                             status=status.HTTP_400_BAD_REQUEST)
+            
+        conv_rate = Decimal(str(get_current_rate_wei()))       # e.g. 10 credits per 1 USDT
+        limit_usdt = DAILY_LIMIT_USDT                          # 500.00
+        limit_credits = (limit_usdt * conv_rate)               # e.g. 5000
+
+        today = timezone.localdate()
+        already_today = _sum_withdrawn_credits_for_date(user, today, include_pending=True)
+
+        remaining_credits = limit_credits - already_today
+        if remaining_credits < 0:
+            remaining_credits = Decimal(0)
+
+        if Decimal(credits) > remaining_credits:
+            remaining_usdt = (remaining_credits / conv_rate).quantize(Decimal("0.01"))
+            return Response(
+                {
+                    "error": "Daily withdraw limit exceeded.",
+                    "limit": {
+                        "usdt": f"{limit_usdt:.2f}",
+                        "credits": str(limit_credits.normalize()),
+                    },
+                    "used_today": {
+                        "usdt": f"{(already_today/conv_rate).quantize(Decimal('0.01')):.2f}",
+                        "credits": str(already_today.normalize()),
+                    },
+                    "remaining_today": {
+                        "usdt": f"{remaining_usdt:.2f}",
+                        "credits": str(remaining_credits.normalize()),
+                    },
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
             
         amount = credits // get_current_rate_wei()
         res = chain(
