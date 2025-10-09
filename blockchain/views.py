@@ -398,7 +398,7 @@ class WithdrawView(APIView):
         return Response(
             {
                 "message": "Withdrawal enqueued, check on-chain soon",
-                "task_id": task.id
+                "task_id": res.id
             },
             status=status.HTTP_202_ACCEPTED
         )
@@ -432,7 +432,7 @@ class WithdrawVerifyRequestCodeView(APIView):
 
             # send email
             html_msg = render_to_string(
-                "verify_email.html",
+                "confirm-withdrawal.html",
                 {
                     "verification_code": code,
                     "title":  "Confirm Your Withdrawal",
@@ -531,7 +531,7 @@ class WithdrawUpdateEmailView(APIView):
         vc.save()
 
         # 3️⃣ Send it to the NEW address
-        html = render_to_string("verify_email.html", {"verification_code": code})
+        html = render_to_string("confirm-withdrawal.html", {"verification_code": code})
         send_mail(
             subject="Your Withdrawal Verification Code",
             message=f"Your code is: {code}",
