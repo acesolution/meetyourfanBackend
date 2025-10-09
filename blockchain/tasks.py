@@ -318,8 +318,8 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     campaign_id=campaign_id,
                     influencer_id=User.objects.get(user_id=sellerId).id,
                     tx_type=InfluencerTransaction.RELEASE,
-                    tt_amount=tt_amount,
-                    credits_delta=cr_amount,
+                    tt_amount=str(tt_amount),
+                    credits_delta=str(cr_amount),
                     tt_amount_wei=str(wei_tt),          
                     credits_delta_wei=str(wei_cr),
                 )
@@ -327,8 +327,10 @@ def release_all_holds_for_campaign_task(self, campaign_id, seller_id):
                 recorded.append({
                     'tx_hash':     tx_hash,
                     'buyerId':     buyerId,
-                    'ttAmountWei': tt_amount,
-                    'creditAmountWei': cr_amount,
+                    'ttAmount': str(tt_amount),
+                    'creditAmount': str(cr_amount),
+                    'ttAmountWei': str(wei_tt),
+                    'creditAmountWei': str(wei_cr),
                 })
 
 
@@ -386,8 +388,8 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
                     campaign_id=campaign_id,
                     influencer_id=User.objects.get(user_id=seller_id).id,
                     tx_type=InfluencerTransaction.REFUND,
-                    tt_amount=tt_amount,
-                    credits_delta=cr_amount,
+                    tt_amount=str(tt_amount),
+                    credits_delta=str(cr_amount),
                     tt_amount_wei=str(wei_tt),          # keep exact on-chain integers
                     credits_delta_wei=str(wei_cr),
                 )
@@ -395,8 +397,10 @@ def refund_all_holds_for_campaign_task(self, campaign_id, seller_id):
                 recorded.append({
                     'tx_hash':     tx_hash,
                     'buyerId':     buyerId,
-                    'ttAmountWei': tt_amount,
-                    'creditAmountWei': cr_amount,
+                    'ttAmount': str(tt_amount),
+                    'creditAmount': str(cr_amount),
+                    'ttAmountWei': str(wei_tt),
+                    'creditAmountWei': str(wei_cr),
                 })
 
         return recorded

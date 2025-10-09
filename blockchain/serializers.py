@@ -38,8 +38,15 @@ class InfluencerTransactionSerializer(BaseOnChainSerializer):
             "status", "block_number", "transaction_index",
             "gas_used", "effective_gas_price",
             "from_address", "to_address", "value", "input_data",
-            "timestamp", "campaign",
+            "timestamp", "campaign","viewer_role", 
         ]
+        
+    def get_viewer_role(self, obj):
+        request = self.context.get("request")
+        # built-in getattr(): safe attribute access with default
+        if request and getattr(request, "user", None):
+            return "owner" if obj.influencer_id == request.user.id else "buyer"
+        return None
 
 
 

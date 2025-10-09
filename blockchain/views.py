@@ -763,12 +763,30 @@ class UserTransactionsView(APIView):
         # Paginate transactions
         paginator_tx = StandardPagination()
         tx_page, tx_meta = _paginate_queryset(tx_qs, request, paginator_tx)
-        tx_serialized = TransactionSerializer(tx_page, many=True).data
+        tx_serialized = TransactionSerializer(tx_page, many=True, context={"request": request}).data
 
         response_payload = {
             "transactions": tx_serialized,
             "transactions_pagination": tx_meta,
         }
+        
+        # ── NEW: participant view of release/refund (buyer-side) ───────────────
+        # built-in filter(): DB WHERE user_id = request.user.id
+        part_qs = (InfluencerTransaction.objects
+                   .filter(user=user)                 # ← current user as participant/buyer
+                   .select_related("campaign"))
+        if status_filter:
+            part_qs = part_qs.filter(status=status_filter)
+        part_qs = _apply_filters_to_qs(part_qs, request.query_params)
+        part_qs = part_qs.order_by("-timestamp")
+
+        paginator_part = StandardPagination()
+        part_page, part_meta = _paginate_queryset(part_qs, request, paginator_part)
+        part_serialized = InfluencerTransactionSerializer(part_page, many=True, context={"request": request}).data
+
+        response_payload["participant_transactions"] = part_serialized
+        response_payload["participant_transactions_pagination"] = part_meta
+        # ───────────────────────────────────────────────────────────────────────
 
         if getattr(user, "user_type", None) == "influencer":
             # InfluencerTransactions are scoped by influencer field
@@ -780,7 +798,7 @@ class UserTransactionsView(APIView):
 
             paginator_inf = StandardPagination()
             inf_page, inf_meta = _paginate_queryset(inf_qs, request, paginator_inf)
-            inf_serialized = InfluencerTransactionSerializer(inf_page, many=True).data
+            inf_serialized = InfluencerTransactionSerializer(inf_page, many=True, context={"request": request}).data
 
             response_payload["influencer_transactions"] = inf_serialized
             response_payload["influencer_transactions_pagination"] = inf_meta
@@ -808,7 +826,8 @@ class ReportTransactionIssueView(APIView):
         if transaction_type == "transaction":
             qs = Transaction.objects.filter(user=user)
         elif transaction_type == "influencer_transaction":
-            qs = InfluencerTransaction.objects.filter(influencer=user)
+            # built-in Q(): OR condition so buyers OR owners can see their rows
+            qs = InfluencerTransaction.objects.filter(Q(influencer=user) | Q(user=user))
         else:
             raise ValueError("Invalid transaction_type.")
 
