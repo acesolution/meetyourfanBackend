@@ -31,6 +31,7 @@ class TransactionSerializer(BaseOnChainSerializer):
 
 
 class InfluencerTransactionSerializer(BaseOnChainSerializer):
+    viewer_role = serializers.SerializerMethodField()
     class Meta:
         model = InfluencerTransaction
         fields = [
@@ -42,10 +43,19 @@ class InfluencerTransactionSerializer(BaseOnChainSerializer):
         ]
         
     def get_viewer_role(self, obj):
+        """
+        "owner"  → when the viewer is the campaign owner (obj.influencer)
+        "buyer"  → when the viewer is the participant (obj.user)
+        None     → otherwise
+        """
         request = self.context.get("request")
-        # built-in getattr(): safe attribute access with default
-        if request and getattr(request, "user", None):
-            return "owner" if obj.influencer_id == request.user.id else "buyer"
+        if not request or not getattr(request, "user", None):
+            return None
+        uid = request.user.id
+        if obj.influencer_id == uid:
+            return "owner"
+        if obj.user_id == uid:
+            return "buyer"
         return None
 
 
