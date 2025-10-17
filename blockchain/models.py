@@ -237,19 +237,28 @@ class IssueAttachment(models.Model):
     file = models.FileField(upload_to="issue_reports/%Y/%m/")
     
     
-# pseudo model
 class GuestOrder(models.Model):
+    class Status(models.TextChoices):
+        CREATED   = "created",   "Created"
+        PENDING   = "pending",   "Pending"
+        CONFIRMED = "confirmed", "Confirmed"
+        FAILED    = "failed",    "Failed"
+        CLAIMED   = "claimed",   "Claimed"
+
     click_id   = models.UUIDField(unique=True)
-    ref        = models.CharField(max_length=66)     # 0x... keccak(click_id)
-    status     = models.CharField(max_length=16, choices=[('created','pending','confirmed','failed','claimed')])
-    amount     = models.DecimalField(max_digits=78, decimal_places=0)  # token wei or human → pick one and be consistent
+    ref        = models.CharField(max_length=66)  # 0x... keccak(click_id)
+    status     = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.CREATED,
+    )
+    amount         = models.DecimalField(max_digits=78, decimal_places=0)
     token_decimals = models.IntegerField(default=18)
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     campaign   = models.ForeignKey('campaign.Campaign', null=True, blank=True, on_delete=models.SET_NULL)
     entries    = models.IntegerField(null=True, blank=True)
-    order_id   = models.CharField(max_length=64, null=True, blank=True)  # Wert order id
-    tx_hash    = models.CharField(max_length=66, null=True, blank=True)  # set when we get it
-
+    order_id   = models.CharField(max_length=64, null=True, blank=True)
+    tx_hash    = models.CharField(max_length=66, null=True, blank=True)
 
 # --- WERT INTEGRATION MODELS ---
 
