@@ -235,3 +235,66 @@ class TransactionIssueReport(models.Model):
 class IssueAttachment(models.Model):
     report = models.ForeignKey(TransactionIssueReport, related_name="attachments", on_delete=models.CASCADE)
     file = models.FileField(upload_to="issue_reports/%Y/%m/")
+    
+    
+# pseudo model
+class GuestOrder(models.Model):
+    click_id   = models.UUIDField(unique=True)
+    ref        = models.CharField(max_length=66)     # 0x... keccak(click_id)
+    status     = models.CharField(max_length=16, choices=[('created','pending','confirmed','failed','claimed')])
+    amount     = models.DecimalField(max_digits=78, decimal_places=0)  # token wei or human → pick one and be consistent
+    token_decimals = models.IntegerField(default=18)
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    campaign   = models.ForeignKey('campaign.Campaign', null=True, blank=True, on_delete=models.SET_NULL)
+    entries    = models.IntegerField(null=True, blank=True)
+    order_id   = models.CharField(max_length=64, null=True, blank=True)  # Wert order id
+    tx_hash    = models.CharField(max_length=66, null=True, blank=True)  # set when we get it
+
+
+# --- WERT INTEGRATION MODELS ---
+
+class WertOrder(models.Model):
+    STATUS_CHOICES = [
+        ("created", "Created"),     # when widget config returned
+        ("pending", "Pending"),     # webhook “payment.pending”
+        ("confirmed", "Confirmed"), # webhook “payment.confirmed”
+        ("failed", "Failed"),       # webhook “payment.failed”
+        ("claimed", "Claimed"),     # after claimPending on-chain (optional)
+    ]
+    order_id      = models.CharField(max_length=80, unique=True, null=True, blank=True)
+    click_id      = models.CharField(max_length=80, db_index=True, null=True, blank=True)
+    ref           = models.CharField(max_length=66, db_index=True, null=True, blank=True)  # 0x… keccak(click_id)
+    status        = models.CharField(max_length=16, choices=STATUS_CHOICES, default="created")
+
+    # amounts: keep both if helpful (fiat for reconciliation; token wei for exactness)
+    fiat_currency = models.CharField(max_length=8, null=True, blank=True)
+    fiat_amount   = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+
+    token_symbol  = models.CharField(max_length=16, null=True, blank=True)  # e.g., TT
+    token_network = models.CharField(max_length=16, null=True, blank=True)  # e.g., bsc
+    token_amount_wei = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
+
+    tx_id         = models.CharField(max_length=66, null=True, blank=True)  # chain tx hash
+    raw           = models.JSONField(null=True, blank=True)                 # last webhook/API payload
+
+    # helpful joins for your flow (optional)
+    user          = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    campaign      = models.ForeignKey('campaign.Campaign', null=True, blank=True, on_delete=models.SET_NULL)
+    entries       = models.IntegerField(null=True, blank=True)
+
+    created_at    = models.DateTimeField(auto_now_add=True)
+    updated_at    = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["updated_at"])]
+
+    def __str__(self):
+        return f"{self.order_id or self.click_id} [{self.status}]"
+
+
+class WertSyncCursor(models.Model):
+    name          = models.CharField(max_length=32, unique=True, default="default")
+    last_synced_at= models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"WertSyncCursor({self.name}) @ {self.last_synced_at}"

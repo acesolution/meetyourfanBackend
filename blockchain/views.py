@@ -594,12 +594,12 @@ class WertWebhookView(View):
     def post(self, request, *args, **kwargs):
         # 1) Raw body for signature check
         raw_body = request.body
+        
+        logging.info("Wert webhook received: %s", raw_body)
 
         # 2) Grab the HMAC header Wert sends
         signature = request.META.get('HTTP_X_WERT_SIGNATURE', '')
-        if not signature:
-            return HttpResponseForbidden("Missing signature")
-
+        
         # 3) Compute our own HMAC‑SHA256 of the raw payload
         computed = hmac.new(
             key=WERT_WEBHOOK_SECRET.encode(),

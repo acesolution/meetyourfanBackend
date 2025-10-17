@@ -6,7 +6,9 @@ from .models import (
     BalanceSnapshot,
     InfluencerTransaction,
     OnChainAction,
-    ConversionRate
+    ConversionRate,
+    WertSyncCursor,
+    WertOrder,
 )
 
 # ── Transaction ──────────────────────────────────────────────────────────────
@@ -180,3 +182,12 @@ class ConversionRateAdmin(admin.ModelAdmin):
     # built-in: disable deletion so the singleton stays present
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(WertOrder)
+class WertOrderAdmin(admin.ModelAdmin):
+    list_display  = ("order_id","click_id","status","fiat_amount","token_symbol","token_amount_wei","tx_id","updated_at")
+    list_filter   = ("status","token_symbol","token_network")
+    search_fields = ("order_id","click_id","tx_id","ref")
+
+admin.site.register(WertSyncCursor)
