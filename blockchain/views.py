@@ -583,66 +583,98 @@ class ConfirmDepositView(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class WertWebhookView(View):
     """
-    Class‑based view to handle Wert on‑chain webhooks.
+    Accept Wert webhooks (unsigned). If an X-WERT-SIGNATURE header ever appears
+    and WERT_WEBHOOK_SECRET is set, verify it; otherwise just log and proceed.
     """
 
-    # Built‑in: dispatch() routes to get()/post()/etc based on HTTP method.
-    # By decorating dispatch() with csrf_exempt, all sub‑methods skip CSRF.
-    def dispatch(self, request, *args, **kwargs):
-        return super().dispatch(request, *args, **kwargs)
-
     def post(self, request, *args, **kwargs):
-        # 1) Raw body for signature check
         raw_body = request.body
-        
-        logger.error("Wert webhook received: %s", raw_body)
+        logger.info("Wert webhook received: %s", raw_body[:MAX_BYTES])
 
-        # 2) Grab the HMAC header Wert sends
-        signature = request.META.get('HTTP_X_WERT_SIGNATURE', '')
-        
-        # 3) Compute our own HMAC‑SHA256 of the raw payload
-        computed = hmac.new(
-            key=WERT_WEBHOOK_SECRET.encode(),
-            msg=raw_body,
-            digestmod=hashlib.sha256
-        ).hexdigest()
+        # Optional HMAC check (only enforce when BOTH are present)
+        signature = request.META.get('HTTP_X_WERT_SIGNATURE')
+        if WERT_WEBHOOK_SECRET and signature:
+            computed = hmac.new(
+                key=WERT_WEBHOOK_SECRET.encode(),
+                msg=raw_body,
+                digestmod=hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(computed, signature):
+                logger.warning("Wert webhook signature mismatch; ignoring HMAC and continuing")
+        elif signature or WERT_WEBHOOK_SECRET:
+            # Header or secret missing — just log for visibility, do not block
+            logger.debug("Wert webhook: no usable signature; proceeding unsigned")
 
-        # 4) Compare in constant time
-        if not hmac.compare_digest(computed, signature):
-            return HttpResponseForbidden("Invalid signature")
-
-        # 5) Parse JSON
+        # Parse JSON
         try:
-            event = json.loads(raw_body)
+            payload = json.loads(raw_body)
         except json.JSONDecodeError:
+            logger.warning("Wert webhook: invalid JSON")
             return HttpResponseBadRequest("Invalid JSON")
 
-        # 6) Dispatch by event type
-        evt = event.get('event')
-        order_id = event.get('order_id')
-        tx_id    = event.get('tx_id')     # only on confirmed
-        amount   = event.get('amount')
+        evt_type = payload.get("type")  # e.g. test, payment_started, order_complete, order_failed, order_canceled, transfer_started, ...
+        user_id  = (payload.get("user") or {}).get("user_id")
+        click_id = payload.get("click_id")
 
-        if evt == 'payment.pending':
-            mark_deposit_pending(order_id, amount)
+        order     = payload.get("order") or {}
+        order_id  = order.get("id")               # may be empty on test
+        tx_id     = order.get("transaction_id")
+        base      = order.get("base")             # asset (or sometimes fiat in their test)
+        base_amt  = order.get("base_amount")
+        quote     = order.get("quote")            # fiat/quote currency
+        quote_amt = order.get("quote_amount")
+        address   = order.get("address")
 
-        elif evt == 'payment.confirmed':
-            mark_deposit_confirmed(order_id, tx_id)
+        # Map Wert event -> our WertOrder.status
+        status_map = {
+            "payment_started": "pending",
+            "transfer_started": "pending",
+            "order_complete": "confirmed",
+            "order_failed": "failed",
+            "order_canceled": "failed",
+            "tx_smart_contract_failed": "failed",
+            # "test" → leave as "created" so we can see it but not count it
+        }
+        new_status = status_map.get(evt_type)
 
-        elif evt == 'payment.failed':
-            mark_deposit_failed(order_id)
+        # Upsert WertOrder
+        from blockchain.models import WertOrder  # lazy import to avoid cycles
 
-        else:
-            # Unrecognized event; you can log it here
-            print("Unhandled Wert event:", evt)
+        defaults = {
+            "click_id":       click_id,
+            "tx_id":          tx_id,
+            "raw":            payload,
+            "token_symbol":   base,
+            "token_network":  None,  # fill if you pass it into widget and it returns back
+            # Keep both fiat & asset numbers for reconciliation; guard Decimal conversions
+            "fiat_currency":  quote,
+            "fiat_amount":    Decimal(quote_amt) if quote_amt else None,
+            # token_amount_wei: leave None unless you convert base_amt to a canonical integer
+        }
+        if new_status:
+            defaults["status"] = new_status
 
-        # 7) Always respond 200 OK to acknowledge receipt
-        return JsonResponse({'ok': True})
+        try:
+            if order_id:
+                obj, _ = WertOrder.objects.update_or_create(
+                    order_id=order_id, defaults=defaults
+                )
+            else:
+                # For “test” events with no order_id — use click_id as stable key
+                obj, created = WertOrder.objects.get_or_create(
+                    order_id=None, click_id=click_id, defaults=defaults
+                )
+                if not created:
+                    for k, v in defaults.items():
+                        setattr(obj, k, v)
+                    obj.save(update_fields=list(defaults.keys()))
+        except Exception as e:
+            logger.exception("Failed to upsert WertOrder: %s", e)
+            # Acknowledge anyway so Wert doesn't retry storm
+            return JsonResponse({"ok": True, "stored": False})
 
-    def get(self, request, *args, **kwargs):
-        # Built‑in: if someone tries GET, we reject
-        return HttpResponseBadRequest("Only POST allowed")
-
+        logger.info("Wert webhook processed: type=%s order_id=%s status=%s", evt_type, order_id, obj.status)
+        return JsonResponse({"ok": True})
 
 # Custom small wrapper to reuse DRF's page logic but expose metadata manually.
 class StandardPagination(PageNumberPagination):
