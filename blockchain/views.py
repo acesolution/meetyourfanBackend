@@ -589,7 +589,7 @@ class WertWebhookView(View):
 
     def post(self, request, *args, **kwargs):
         raw_body = request.body
-        logger.info("Wert webhook received: %s", raw_body[:MAX_BYTES])
+        logger.error("Wert webhook received: %s", raw_body[:MAX_BYTES])
 
         # Optional HMAC check (only enforce when BOTH are present)
         signature = request.META.get('HTTP_X_WERT_SIGNATURE')
@@ -600,16 +600,16 @@ class WertWebhookView(View):
                 digestmod=hashlib.sha256
             ).hexdigest()
             if not hmac.compare_digest(computed, signature):
-                logger.warning("Wert webhook signature mismatch; ignoring HMAC and continuing")
+                logger.error("Wert webhook signature mismatch; ignoring HMAC and continuing")
         elif signature or WERT_WEBHOOK_SECRET:
             # Header or secret missing — just log for visibility, do not block
-            logger.debug("Wert webhook: no usable signature; proceeding unsigned")
+            logger.error("Wert webhook: no usable signature; proceeding unsigned")
 
         # Parse JSON
         try:
             payload = json.loads(raw_body)
         except json.JSONDecodeError:
-            logger.warning("Wert webhook: invalid JSON")
+            logger.error("Wert webhook: invalid JSON")
             return HttpResponseBadRequest("Invalid JSON")
 
         evt_type = payload.get("type")  # e.g. test, payment_started, order_complete, order_failed, order_canceled, transfer_started, ...
