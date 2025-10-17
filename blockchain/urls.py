@@ -36,7 +36,7 @@ urlpatterns = [
     path("withdraw/",              WithdrawView.as_view()),
     path( "withdraw/update-email/", WithdrawUpdateEmailView.as_view(), name="withdraw-update-email"),
     path('confirm-deposit/', ConfirmDepositView.as_view(), name='confirm-deposit'),
-    path('  ', WertWebhookView.as_view(), name='wert-webhook'),
+    path('webhooks/wert/', WertWebhookView.as_view(), name='wert-webhook'),
     path('conversion-rate/', ConversionRateView.as_view(), name='conversion-rate'),
     path('user-transactions/', UserTransactionsView.as_view(), name='user-transactions'),
     path("report-transaction-issue/", ReportTransactionIssueView.as_view(), name="report-transaction-issue"),
