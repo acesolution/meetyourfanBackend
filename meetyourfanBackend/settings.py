@@ -254,40 +254,57 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LOGGING = {
     "version": 1,
-    "disable_existing_loggers": False,  # keep Django’s default loggers defined
+    "disable_existing_loggers": False,  # built-in dictConfig: keep Django’s defaults instead of wiping them
+
     "formatters": {
         "simple": {
             "format": "[{asctime}] {levelname} {name}: {message}",
-            "style": "{",
+            "style": "{",  # built-in: str.format-style formatting
         },
     },
+
     "handlers": {
-        # ─── your console handler ───
         "console": {
-            "class": "logging.StreamHandler",    # built-in: writes to stderr
+            "class": "logging.StreamHandler",  # built-in: writes to sys.stderr -> picked up by systemd/journald
             "formatter": "simple",
         },
-        # ─── optional file handler ───
         "file": {
-            "class": "logging.FileHandler",      # built-in: writes to a file
+            "class": "logging.FileHandler",    # built-in: writes to a file path
             "filename": "/var/log/django/django.log",
             "formatter": "simple",
         },
     },
+
     "root": {
-        # built-in root logger: will only show WARNING+ from all libraries
-        "level": "WARNING",
-        "handlers": ["file"],  # you can omit file if you don’t want a catch-all file
+        # Root logger catches everything that “propagates”
+        "level": "INFO",               # show INFO+ by default so .info() appears
+        "handlers": ["console", "file"]  # <-- send to journald AND file
     },
+
     "loggers": {
-        # ─── your application logger ───
-        "campaign": {
-            "level": "DEBUG",         # or INFO if you don’t need DEBUG messages
-            "handlers": ["console"],  # only send your logs to console
-            "propagate": False,       # don’t pass messages up to root
+        # Your apps: send directly to console+file, don’t rely on root only.
+        "blockchain": {
+            "level": "DEBUG",
+            "handlers": ["console", "file"],
+            "propagate": False,  # built-in: stop bubbling to root (avoids duplicate lines)
         },
-        # If your code lives under meetyourfanBackend/, you could do:
-        # "meetyourfanBackend": { ... }
+        "campaign": {
+            "level": "DEBUG",
+            "handlers": ["console", "file"],
+            "propagate": False,
+        },
+        "meetyourfanBackend": {
+            "level": "DEBUG",
+            "handlers": ["console", "file"],
+            "propagate": False,
+        },
+
+        # Optional: see request/500s in journal quickly
+        "django.request": {
+            "level": "WARNING",
+            "handlers": ["console", "file"],
+            "propagate": False,
+        },
     },
 }
 
