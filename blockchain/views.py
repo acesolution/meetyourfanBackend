@@ -595,7 +595,7 @@ class WertWebhookView(View):
         # 1) Raw body for signature check
         raw_body = request.body
         
-        logging.info("Wert webhook received: %s", raw_body)
+        logger.error("Wert webhook received: %s", raw_body)
 
         # 2) Grab the HMAC header Wert sends
         signature = request.META.get('HTTP_X_WERT_SIGNATURE', '')
