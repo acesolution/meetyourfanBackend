@@ -1126,6 +1126,8 @@ class GuestInitDepositView(APIView):
     Body: { "email": "guest@x.com", "amount": <float or str>, "campaign_id": <int|null>, "entries": <int|null> }
     Returns: { click_id, ref, amount_wei }
     """
+    permission_classes = []
+    authentication_classes = []  # IMPORTANT: avoid SessionAuthentication -> CSRF
     def post(self, request):
         try:
             email       = (request.data.get("email") or "").strip() or None
