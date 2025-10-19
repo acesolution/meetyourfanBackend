@@ -40,6 +40,7 @@ from django.db.models import Sum, Case, When, F, DecimalField, Value, Max, Count
 from django.db.models.functions import Coalesce, Abs
 from celery import chain
 import base64
+from uuid import uuid4, UUID
 
 logger = logging.getLogger(__name__)
 
@@ -1122,54 +1123,78 @@ class FanSpendingsView(APIView):
 
 class GuestInitDepositView(APIView):
     """
-    POST /api/guest/init-deposit/
-    Body: { "email": "guest@x.com", "amount": <float or str>, "campaign_id": <int|null>, "entries": <int|null> }
-    Returns: { click_id, ref, amount_wei }
+    POST /api/blockchain/guest/init-deposit/
+    Body: {
+      click_id?: string (uuid),
+      ref?: string (0x + 64 hex),
+      email?: string|null,
+      amount: <float|string>   # TT units
+      token_decimals?: int     # default 18
+      campaign_id?: int|null,
+      entries?: int|null
+    }
     """
     permission_classes = []
-    authentication_classes = []  # IMPORTANT: avoid SessionAuthentication -> CSRF
-    def post(self, request):
-        try:
-            email       = (request.data.get("email") or "").strip() or None
-            entries     = request.data.get("entries")
-            campaign_id = request.data.get("campaign_id")
-            amount_raw  = request.data.get("amount")  # can be "12.34" or number
-            token_dec   = int(request.data.get("token_decimals") or 18)
-        except Exception:
-            return Response({"error": "invalid payload"}, status=400)
+    authentication_classes = []  # avoid SessionAuthentication → CSRF
 
-        # basic validation
+    def post(self, request):
+        data = request.data
+        email       = (data.get("email") or "").strip() or None
+        amount_raw  = data.get("amount")
+        token_dec   = int(data.get("token_decimals") or 18)
+        entries     = data.get("entries")
+        campaign_id = data.get("campaign_id")
+
         if not amount_raw:
             return Response({"error": "amount is required"}, status=400)
+
         try:
-            # accept decimal string/number → wei int
             amount_wei = int(Decimal(str(amount_raw)) * (Decimal(10) ** token_dec))
         except Exception:
             return Response({"error": "invalid amount"}, status=400)
+
+        # normalize click_id
+        cid = data.get("click_id")
+        try:
+            click_id = UUID(str(cid)) if cid else uuid4()
+        except Exception:
+            return Response({"error": "invalid click_id"}, status=400)
+
+        # normalize/refall ref
+        ref_raw = data.get("ref")
+        if ref_raw:
+            ref_hex = str(ref_raw).lower()
+            if not ref_hex.startswith("0x"):
+                ref_hex = "0x" + ref_hex
+            if len(ref_hex) != 66:
+                return Response({"error": "invalid ref"}, status=400)
+            ref = ref_hex
+        else:
+            ref = Web3.keccak(text=str(click_id)).hex()
 
         campaign = None
         if campaign_id:
             from campaign.models import Campaign
             campaign = Campaign.objects.filter(pk=campaign_id).first()
 
-        click_id = uuid4()
-        # keccak(click_id) -> 0x…32
-        ref = Web3.keccak(text=str(click_id)).hex()
-
         from blockchain.models import GuestOrder, WertOrder
-        order = GuestOrder.objects.create(
-            click_id     = click_id,
-            ref          = ref,
-            email        = email,
-            amount       = amount_wei,
-            token_decimals = token_dec,
-            campaign     = campaign,
-            entries      = int(entries) if entries else None,
-            status       = GuestOrder.Status.CREATED,
+
+        defaults = {
+            "ref": ref,
+            "email": email,
+            "amount": amount_wei,
+            "token_decimals": token_dec,
+            "campaign": campaign,
+            "entries": int(entries) if entries else None,
+            "status": GuestOrder.Status.CREATED,
+        }
+
+        obj, created = GuestOrder.objects.update_or_create(
+            click_id=click_id, defaults=defaults
         )
 
-        # optional: mirror a WertOrder “shell” early
-        WertOrder.objects.get_or_create(
+        # mirror WertOrder shell (useful for webhook reconciliation)
+        WertOrder.objects.update_or_create(
             order_id=None,
             click_id=str(click_id),
             defaults={
@@ -1177,16 +1202,14 @@ class GuestInitDepositView(APIView):
                 "status": "created",
                 "token_amount_wei": amount_wei,
                 "campaign": campaign,
-                "entries": order.entries,
+                "entries": obj.entries,
             }
         )
 
-        return Response({
-            "click_id": str(click_id),
-            "ref":      ref,
-            "amount_wei": str(amount_wei),
-        }, status=201)
-
+        # no need to return IDs, but harmless if we do
+        return Response({"ok": True, "click_id": str(click_id), "ref": ref}, status=201 if created else 200)
+    
+    
 def _b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
