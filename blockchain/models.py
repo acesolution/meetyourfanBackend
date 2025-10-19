@@ -247,6 +247,7 @@ class GuestOrder(models.Model):
 
     click_id   = models.UUIDField(unique=True)
     ref        = models.CharField(max_length=66)  # 0x... keccak(click_id)
+    email      = models.EmailField(null=True, blank=True)
     status     = models.CharField(
         max_length=16,
         choices=Status.choices,

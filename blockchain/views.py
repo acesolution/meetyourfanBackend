@@ -39,6 +39,7 @@ from django.db import transaction as db_transaction
 from django.db.models import Sum, Case, When, F, DecimalField, Value, Max, Count
 from django.db.models.functions import Coalesce, Abs
 from celery import chain
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +673,37 @@ class WertWebhookView(View):
             logger.exception("Failed to upsert WertOrder: %s", e)
             # Acknowledge anyway so Wert doesn't retry storm
             return JsonResponse({"ok": True, "stored": False})
+        
+        
+        # >>> INSERT THIS BLOCK HERE ↓↓↓
+        from blockchain.models import GuestOrder
+
+        # Map to GuestOrder.status
+        guest_map = {
+            "pending":   GuestOrder.Status.PENDING,
+            "confirmed": GuestOrder.Status.CONFIRMED,
+            "failed":    GuestOrder.Status.FAILED,
+        }
+
+        if click_id:
+            try:
+                go = GuestOrder.objects.get(click_id=click_id)
+                updates = []
+                if new_status and new_status in guest_map:
+                    go.status = guest_map[new_status]
+                    updates.append("status")
+                if order_id and not go.order_id:
+                    go.order_id = order_id
+                    updates.append("order_id")
+                if tx_id and not go.tx_hash:
+                    go.tx_hash = tx_id
+                    updates.append("tx_hash")
+                if updates:
+                    go.save(update_fields=updates)
+            except GuestOrder.DoesNotExist:
+                # ok: webhook can arrive before we created GuestOrder for tests
+                pass
+        # >>> END INSERT ^^^
 
         logger.info("Wert webhook processed: type=%s order_id=%s status=%s", evt_type, order_id, obj.status)
         return JsonResponse({"ok": True})
@@ -1085,3 +1117,177 @@ class FanSpendingsView(APIView):
             ]
 
         return Response(payload, status=200)
+
+
+
+class GuestInitDepositView(APIView):
+    """
+    POST /api/guest/init-deposit/
+    Body: { "email": "guest@x.com", "amount": <float or str>, "campaign_id": <int|null>, "entries": <int|null> }
+    Returns: { click_id, ref, amount_wei }
+    """
+    def post(self, request):
+        try:
+            email       = (request.data.get("email") or "").strip() or None
+            entries     = request.data.get("entries")
+            campaign_id = request.data.get("campaign_id")
+            amount_raw  = request.data.get("amount")  # can be "12.34" or number
+            token_dec   = int(request.data.get("token_decimals") or 18)
+        except Exception:
+            return Response({"error": "invalid payload"}, status=400)
+
+        # basic validation
+        if not amount_raw:
+            return Response({"error": "amount is required"}, status=400)
+        try:
+            # accept decimal string/number → wei int
+            amount_wei = int(Decimal(str(amount_raw)) * (Decimal(10) ** token_dec))
+        except Exception:
+            return Response({"error": "invalid amount"}, status=400)
+
+        campaign = None
+        if campaign_id:
+            from campaign.models import Campaign
+            campaign = Campaign.objects.filter(pk=campaign_id).first()
+
+        click_id = uuid4()
+        # keccak(click_id) -> 0x…32
+        ref = Web3.keccak(text=str(click_id)).hex()
+
+        from blockchain.models import GuestOrder, WertOrder
+        order = GuestOrder.objects.create(
+            click_id     = click_id,
+            ref          = ref,
+            email        = email,
+            amount       = amount_wei,
+            token_decimals = token_dec,
+            campaign     = campaign,
+            entries      = int(entries) if entries else None,
+            status       = GuestOrder.Status.CREATED,
+        )
+
+        # optional: mirror a WertOrder “shell” early
+        WertOrder.objects.get_or_create(
+            order_id=None,
+            click_id=str(click_id),
+            defaults={
+                "ref": ref,
+                "status": "created",
+                "token_amount_wei": amount_wei,
+                "campaign": campaign,
+                "entries": order.entries,
+            }
+        )
+
+        return Response({
+            "click_id": str(click_id),
+            "ref":      ref,
+            "amount_wei": str(amount_wei),
+        }, status=201)
+
+def _b64u(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+def _b64u_dec(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+def _sign(data: str) -> str:
+    secret = os.getenv("GUEST_CLAIM_SECRET", settings.SECRET_KEY)
+    return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
+
+class GuestClaimView(APIView):
+    """
+    POST /api/guest/claim/
+    Body: { "token": "<opaque>" }
+    Token payload = base64url("click_id|email|exp") + "." + hex(hmac)
+    On success: creates/attaches user, calls claimPending(ref,userId).
+    """
+    authentication_classes = []  # guest
+    permission_classes = []
+
+    def post(self, request):
+        token = request.data.get("token")
+        if not token or "." not in token:
+            return Response({"error":"invalid token"}, status=400)
+        payload_b64, sig = token.split(".", 1)
+        try:
+            payload = _b64u_dec(payload_b64).decode()
+            click_id, email, exp_s = payload.split("|", 2)
+            exp = int(exp_s)
+        except Exception:
+            return Response({"error":"bad token"}, status=400)
+
+        # verify sig & expiry
+        if _sign(payload) != sig:
+            return Response({"error":"bad signature"}, status=400)
+        if time.time() > exp:
+            return Response({"error":"token expired"}, status=400)
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        # find GuestOrder
+        from blockchain.models import GuestOrder
+        try:
+            go = GuestOrder.objects.select_related("campaign").get(click_id=click_id)
+        except GuestOrder.DoesNotExist:
+            return Response({"error":"not found"}, status=404)
+
+        # create or attach user (very simplified)
+        user, _ = User.objects.get_or_create(email=email, defaults={"username": email})
+        go.user = user
+
+        # on-chain: ensure registered, then claimPending
+        try:
+            chain_id = w3.eth.chain_id
+            nonce    = w3.eth.get_transaction_count(OWNER)
+            tx_params = {
+                "chainId":  chain_id,
+                "from":     OWNER,
+                "nonce":    nonce,
+                "gas":      GAS_LIMIT,
+                "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+            }
+            # register if needed (safe to try — your SC checks exists)
+            _build_and_send(contract.functions.registerUser(int(user.user_id)), tx_params)
+            # refresh nonce
+            tx_params["nonce"] = w3.eth.get_transaction_count(OWNER)
+            # claim
+            tx_hash = _build_and_send(contract.functions.claimPending(go.ref, int(user.user_id)), tx_params)
+            go.status = GuestOrder.Status.CLAIMED
+            go.save(update_fields=["user","status"])
+        except Exception as e:
+            logger.exception("claimPending failed: %s", e)
+            return Response({"error":"on-chain claim failed"}, status=500)
+
+        # (optional) if this guest intent is tied to a campaign & entries, do holdForCampaign now
+        # NOTE: this requires OPERATOR_ROLE for backend signer.
+        if go.campaign_id and go.entries:
+            try:
+                # Compute spend in Wei = entries * 1 TT? If entries map 1:1 to TT, adjust as needed.
+                # Here we assume entries are denominated in TT Wei amount already stored → use go.amount
+                tp = {
+                    "chainId":  w3.eth.chain_id,
+                    "from":     OWNER,
+                    "nonce":    w3.eth.get_transaction_count(OWNER),
+                    "gas":      GAS_LIMIT,
+                    "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+                }
+                # spentCreditWei must equal spentTTWei * conversionRate on-chain
+                spentTTWei     = int(go.amount)
+                conv           = int(get_current_rate_wei())
+                spentCreditWei = spentTTWei * conv
+                _build_and_send(
+                    contract.functions.holdForCampaign(
+                        int(go.campaign_id),
+                        int(user.user_id),
+                        spentTTWei,
+                        spentCreditWei,
+                    ),
+                    tp
+                )
+            except Exception:
+                logger.exception("holdForCampaign after claim failed")
+
+        return Response({"status": "ok"})

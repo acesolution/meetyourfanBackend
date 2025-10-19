@@ -19,7 +19,9 @@ from .views import (
     ReportTransactionIssueView,
     InfluencerEarningsView,
     FanSpendingsView,
-    DailyWithdrawUsageView
+    DailyWithdrawUsageView,
+    GuestInitDepositView,
+    GuestClaimView,
 )
 
 app_name = "blockchain"
@@ -43,4 +45,6 @@ urlpatterns = [
     path("influencer-earnings/", InfluencerEarningsView.as_view(), name="influencer-earnings"),
     path("fan-spendings/", FanSpendingsView.as_view(), name="fan-spendings"),
     path("withdraw/usage/", DailyWithdrawUsageView.as_view()),
+    path("guest/init-deposit/", GuestInitDepositView.as_view(), name="guest-init-deposit"),
+    path("guest/claim/",        GuestClaimView.as_view(),      name="guest-claim"),
 ]
