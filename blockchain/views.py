@@ -638,7 +638,8 @@ class WertWebhookView(View):
             # "test" → leave as "created" so we can see it but not count it
         }
         new_status = status_map.get(evt_type)
-
+        
+        
         # Upsert WertOrder
         from blockchain.models import WertOrder  # lazy import to avoid cycles
 
@@ -670,6 +671,11 @@ class WertWebhookView(View):
                     for k, v in defaults.items():
                         setattr(obj, k, v)
                     obj.save(update_fields=list(defaults.keys()))
+                    
+            if new_status == "confirmed" and click_id:
+                from blockchain.tasks import notify_guest_claim_ready
+                notify_guest_claim_ready.delay(str(click_id))
+
         except Exception as e:
             logger.exception("Failed to upsert WertOrder: %s", e)
             # Acknowledge anyway so Wert doesn't retry storm
@@ -1205,7 +1211,8 @@ class GuestInitDepositView(APIView):
                 "entries": obj.entries,
             }
         )
-
+        
+        
         # no need to return IDs, but harmless if we do
         return Response({"ok": True, "click_id": str(click_id), "ref": ref}, status=201 if created else 200)
     

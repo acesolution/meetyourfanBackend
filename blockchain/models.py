@@ -253,6 +253,7 @@ class GuestOrder(models.Model):
         choices=Status.choices,
         default=Status.CREATED,
     )
+    claim_email_sent_at = models.DateTimeField(null=True, blank=True)  # NEW
     amount         = models.DecimalField(max_digits=78, decimal_places=0)
     token_decimals = models.IntegerField(default=18)
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
@@ -260,6 +261,7 @@ class GuestOrder(models.Model):
     entries    = models.IntegerField(null=True, blank=True)
     order_id   = models.CharField(max_length=64, null=True, blank=True)
     tx_hash    = models.CharField(max_length=66, null=True, blank=True)
+    
 
 # --- WERT INTEGRATION MODELS ---
 

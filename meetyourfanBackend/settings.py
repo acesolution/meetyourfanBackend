@@ -179,6 +179,10 @@ CELERY_BEAT_SCHEDULE = {
          'task': 'campaign.tasks.close_expired_campaigns',
          'schedule': 60.0,  # Run every minute
     },
+    "sweep-guest-orders-every-2min": {
+        "task": "blockchain.tasks.sweep_confirmed_guest_orders",
+        "schedule": 120.0,  # seconds
+    },
 }
 
 AUTHENTICATION_BACKENDS = [

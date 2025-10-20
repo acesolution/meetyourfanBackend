@@ -8,11 +8,19 @@ from rest_framework.response import Response
 from decimal import Decimal, ROUND_DOWN
 from web3 import Web3
 import logging
-from .models import Transaction, InfluencerTransaction, OnChainAction
+from .models import Transaction, InfluencerTransaction, OnChainAction, GuestOrder, WertOrder
 from typing import Optional
 from web3.exceptions import TransactionNotFound
 from django.contrib.auth import get_user_model
 from decimal import Decimal, ROUND_DOWN
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+import time
+from .views import _b64u, _sign  # reuse your helpers
+from django.utils import timezone
+
+FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
+
 
 def _from_wei(value_wei: int, token_decimals: int = 18, places: int = 2) -> Decimal:
     """
@@ -616,3 +624,89 @@ def withdraw_for_user_task(self, user_id: int, credits_amount: int):
     
     
 
+def _build_claim_token(click_id: str, email: str, ttl_seconds: int = 7 * 24 * 3600) -> str:
+    """opaque claim token: base64url('click_id|email|exp').hmac"""
+    exp = int(time.time()) + ttl_seconds
+    payload = f"{click_id}|{email}|{exp}"
+    return f"{_b64u(payload.encode())}.{_sign(payload)}"
+
+def _compose_claim_link(click_id: str, email: str) -> str:
+    token = _build_claim_token(click_id, email)
+    return f"{FRONTEND_BASE_URL.rstrip('/')}/guest/claim?token={token}"
+
+def _safe_int(x) -> Optional[int]:
+    try:
+        return int(Decimal(str(x)))
+    except Exception:
+        return None
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def notify_guest_claim_ready(self, click_id: str):
+    """
+    Idempotent: sends the claim email once when GuestOrder + WertOrder are confirmed & amounts match.
+    """
+    try:
+        go = GuestOrder.objects.select_for_update(skip_locked=True).get(click_id=click_id)
+    except GuestOrder.DoesNotExist:
+        return "guest order missing"
+
+    # already emailed?
+    if go.claim_email_sent_at or not go.email:
+        return "already sent or no email"
+
+    # need a matching WertOrder in 'confirmed'
+    wo = WertOrder.objects.filter(click_id=str(click_id)).order_by('-updated_at').first()
+    if not wo or wo.status != "confirmed":
+        # re-try later
+        raise self.retry(exc=RuntimeError("wert not confirmed yet"))
+
+    # status on GuestOrder should also be confirmed (your webhook already updates this)
+    if go.status != GuestOrder.Status.CONFIRMED:
+        raise self.retry(exc=RuntimeError("guest not confirmed yet"))
+
+    # optional: amount match (we saved token_amount_wei at init; guest.amount is wei)
+    amt_go = _safe_int(go.amount)
+    amt_wo = _safe_int(wo.token_amount_wei if wo.token_amount_wei is not None else go.amount)
+    if amt_go is not None and amt_wo is not None and amt_go != amt_wo:
+        # you can mark a flag and stop; don’t spam the user
+        # go.flagged_mismatch = True
+        # go.save(update_fields=["flagged_mismatch"])
+        return f"amount mismatch go={amt_go} wo={amt_wo}"
+
+    # build email
+    claim_url = _compose_claim_link(str(go.click_id), go.email)
+    ctx = {
+        "title": "Your payment is confirmed 🎉",
+        "intro": "Click the button below to claim your credits and complete your participation.",
+        "cta_url": claim_url,
+        "footer": "If you didn’t make this purchase, ignore this email.",
+    }
+    html = render_to_string("guest-claim-ready.html", ctx)
+
+    send_mail(
+        subject="Payment confirmed — claim your credits",
+        message=f"Claim here: {claim_url}",
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[go.email],
+        html_message=html,
+        fail_silently=False,
+    )
+
+    go.claim_email_sent_at = timezone.now()
+    go.save(update_fields=["claim_email_sent_at"])
+    return "sent"
+
+@shared_task
+def sweep_confirmed_guest_orders():
+    """
+    Periodic safety net: find confirmed orders with email not yet sent.
+    """
+    qs = GuestOrder.objects.filter(
+        status=GuestOrder.Status.CONFIRMED,
+        email__isnull=False,
+        claim_email_sent_at__isnull=True,
+    ).values_list("click_id", flat=True)[:500]
+
+    for cid in qs:
+        notify_guest_claim_ready.delay(str(cid))
+    return f"queued {len(qs)}"
