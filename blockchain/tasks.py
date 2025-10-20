@@ -20,6 +20,7 @@ from django.utils import timezone
 from blockchain.tx_utils import build_and_send as _build_and_send
 from blockchain.crypto_utils import b64u as _b64u, sign as _sign
 from uuid import UUID
+from django.db import transaction
 
 
 FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
@@ -640,53 +641,64 @@ def _safe_int(x) -> Optional[int]:
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def notify_guest_claim_ready(self, click_id: str):
     """
-    Sends claim email once Wert + GuestOrder are confirmed & amounts match.
-    FE provides click_id/ref; we never generate them here.
+    Idempotent: sends the claim email once when GuestOrder + WertOrder are confirmed & amounts match.
+    Uses a transaction so select_for_update() is valid.
     """
     try:
-        go = GuestOrder.objects.select_for_update(skip_locked=True).get(
-            click_id=UUID(str(click_id))  # explicit parse
-        )
-    except (GuestOrder.DoesNotExist, ValueError):
+        with transaction.atomic():
+            go = (GuestOrder.objects
+                  .select_for_update(skip_locked=True)
+                  .get(click_id=UUID(str(click_id))))  # explicit parse
+
+            # bail early if already sent or missing email
+            if go.claim_email_sent_at or not go.email:
+                return "already sent or no email"
+
+            # WertOrder must be confirmed (join by our FE-provided ref)
+            wo = (WertOrder.objects
+                  .filter(ref=go.ref)
+                  .order_by('-updated_at')
+                  .first())
+            if not wo or wo.status != "confirmed":
+                raise self.retry(exc=RuntimeError("wert not confirmed yet"))
+
+            if go.status != GuestOrder.Status.CONFIRMED:
+                raise self.retry(exc=RuntimeError("guest not confirmed yet"))
+
+            # optional amount check
+            amt_go = _safe_int(go.amount)
+            amt_wo = _safe_int(wo.token_amount_wei if wo.token_amount_wei is not None else go.amount)
+            if amt_go is not None and amt_wo is not None and amt_go != amt_wo:
+                return f"amount mismatch go={amt_go} wo={amt_wo}"
+
+            # build + send email (inside txn is fine for a single row;
+            # if you prefer, flip to the optimistic pattern below)
+            claim_url = _compose_claim_link(str(go.click_id), go.email)
+            ctx = {
+                "title": "Your payment is confirmed 🎉",
+                "intro": "Click the button below to claim your credits and complete your participation.",
+                "cta_url": claim_url,
+                "footer": "If you didn’t make this purchase, ignore this email.",
+            }
+            html = render_to_string("guest-claim-ready.html", ctx)
+            send_mail(
+                subject="Payment confirmed — claim your credits",
+                message=f"Claim here: {claim_url}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[go.email],
+                html_message=html,
+                fail_silently=False,
+            )
+
+            go.claim_email_sent_at = timezone.now()
+            go.save(update_fields=["claim_email_sent_at"])
+
+        return "sent"
+
+    except GuestOrder.DoesNotExist:
         return "guest order missing"
-
-    if go.claim_email_sent_at or not go.email:
-        return "already sent or no email"
-
-    # prefer join by our ref (set by FE at init), not by arbitrary click_id string
-    wo = WertOrder.objects.filter(ref=go.ref).order_by('-updated_at').first()
-    if not wo or wo.status != "confirmed":
-        raise self.retry(exc=RuntimeError("wert not confirmed yet"))
-
-    if go.status != GuestOrder.Status.CONFIRMED:
-        raise self.retry(exc=RuntimeError("guest not confirmed yet"))
-
-    amt_go = _safe_int(go.amount)
-    amt_wo = _safe_int(wo.token_amount_wei if wo.token_amount_wei is not None else go.amount)
-    if amt_go is not None and amt_wo is not None and amt_go != amt_wo:
-        return f"amount mismatch go={amt_go} wo={amt_wo}"
-
-    claim_url = _compose_claim_link(str(go.click_id), go.email)
-    ctx = {
-        "title": "Your payment is confirmed 🎉",
-        "intro": "Click the button below to claim your credits and complete your participation.",
-        "cta_url": claim_url,
-        "footer": "If you didn’t make this purchase, ignore this email.",
-    }
-    html = render_to_string("guest-claim-ready.html", ctx)
-
-    send_mail(
-        subject="Payment confirmed — claim your credits",
-        message=f"Claim here: {claim_url}",
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[go.email],
-        html_message=html,
-        fail_silently=False,
-    )
-
-    go.claim_email_sent_at = timezone.now()
-    go.save(update_fields=["claim_email_sent_at"])
-    return "sent"
+    except ValueError:
+        return "bad click_id"
 
 @shared_task
 def sweep_confirmed_guest_orders():
