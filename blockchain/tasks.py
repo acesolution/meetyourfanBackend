@@ -19,7 +19,7 @@ import time
 from django.utils import timezone
 from blockchain.tx_utils import build_and_send as _build_and_send
 from blockchain.crypto_utils import b64u as _b64u, sign as _sign
-
+from uuid import UUID
 
 
 FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
@@ -640,37 +640,32 @@ def _safe_int(x) -> Optional[int]:
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def notify_guest_claim_ready(self, click_id: str):
     """
-    Idempotent: sends the claim email once when GuestOrder + WertOrder are confirmed & amounts match.
+    Sends claim email once Wert + GuestOrder are confirmed & amounts match.
+    FE provides click_id/ref; we never generate them here.
     """
     try:
-        go = GuestOrder.objects.select_for_update(skip_locked=True).get(click_id=click_id)
-    except GuestOrder.DoesNotExist:
+        go = GuestOrder.objects.select_for_update(skip_locked=True).get(
+            click_id=UUID(str(click_id))  # explicit parse
+        )
+    except (GuestOrder.DoesNotExist, ValueError):
         return "guest order missing"
 
-    # already emailed?
     if go.claim_email_sent_at or not go.email:
         return "already sent or no email"
 
-    # need a matching WertOrder in 'confirmed'
-    wo = WertOrder.objects.filter(click_id=str(click_id)).order_by('-updated_at').first()
+    # prefer join by our ref (set by FE at init), not by arbitrary click_id string
+    wo = WertOrder.objects.filter(ref=go.ref).order_by('-updated_at').first()
     if not wo or wo.status != "confirmed":
-        # re-try later
         raise self.retry(exc=RuntimeError("wert not confirmed yet"))
 
-    # status on GuestOrder should also be confirmed (your webhook already updates this)
     if go.status != GuestOrder.Status.CONFIRMED:
         raise self.retry(exc=RuntimeError("guest not confirmed yet"))
 
-    # optional: amount match (we saved token_amount_wei at init; guest.amount is wei)
     amt_go = _safe_int(go.amount)
     amt_wo = _safe_int(wo.token_amount_wei if wo.token_amount_wei is not None else go.amount)
     if amt_go is not None and amt_wo is not None and amt_go != amt_wo:
-        # you can mark a flag and stop; don’t spam the user
-        # go.flagged_mismatch = True
-        # go.save(update_fields=["flagged_mismatch"])
         return f"amount mismatch go={amt_go} wo={amt_wo}"
 
-    # build email
     claim_url = _compose_claim_link(str(go.click_id), go.email)
     ctx = {
         "title": "Your payment is confirmed 🎉",

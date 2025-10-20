@@ -691,32 +691,39 @@ class WertWebhookView(View):
         # >>> INSERT THIS BLOCK HERE ↓↓↓
         from blockchain.models import GuestOrder
 
-        # Map to GuestOrder.status
+        go = None
+        if click_id:
+            try:
+                go = GuestOrder.objects.get(click_id=UUID(str(click_id)))
+            except (GuestOrder.DoesNotExist, ValueError):
+                go = None
+
+        # fallback by ref if needed (FE sends it to /guest/init-deposit/, so it should be there)
+        if go is None:
+            ref_val = (obj.ref or (payload.get("ref"))) if 'obj' in locals() else None
+            if ref_val:
+                go = GuestOrder.objects.filter(ref__iexact=str(ref_val)).first()
+
         guest_map = {
             "pending":   GuestOrder.Status.PENDING,
             "confirmed": GuestOrder.Status.CONFIRMED,
             "failed":    GuestOrder.Status.FAILED,
         }
 
-        if click_id:
-            try:
-                go = GuestOrder.objects.get(click_id=click_id)
-                updates = []
-                if new_status and new_status in guest_map:
-                    go.status = guest_map[new_status]
-                    updates.append("status")
-                if order_id and not go.order_id:
-                    go.order_id = order_id
-                    updates.append("order_id")
-                if tx_id and not go.tx_hash:
-                    go.tx_hash = tx_id
-                    updates.append("tx_hash")
-                if updates:
-                    go.save(update_fields=updates)
-            except GuestOrder.DoesNotExist:
-                # ok: webhook can arrive before we created GuestOrder for tests
-                pass
-        # >>> END INSERT ^^^
+        if go:
+            updates = []
+            if new_status and new_status in guest_map:
+                go.status = guest_map[new_status]; updates.append("status")
+            if order_id and not go.order_id:
+                go.order_id = order_id; updates.append("order_id")
+            if tx_id and not go.tx_hash:
+                go.tx_hash = tx_id; updates.append("tx_hash")
+            if updates:
+                go.save(update_fields=updates)
+
+            # ✅ enqueue AFTER status is stored; use OUR UUID and only if we have an email
+            if new_status == "confirmed" and go.email:
+                notify_guest_claim_ready.delay(str(go.click_id))
 
         logger.info("Wert webhook processed: type=%s order_id=%s status=%s", evt_type, order_id, obj.status)
         return JsonResponse({"ok": True})
@@ -1134,23 +1141,11 @@ class FanSpendingsView(APIView):
 
 
 class GuestInitDepositView(APIView):
-    """
-    POST /api/blockchain/guest/init-deposit/
-    Body: {
-      click_id?: string (uuid),
-      ref?: string (0x + 64 hex),
-      email?: string|null,
-      amount: <float|string>   # TT units
-      token_decimals?: int     # default 18
-      campaign_id?: int|null,
-      entries?: int|null
-    }
-    """
     permission_classes = []
-    authentication_classes = []  # avoid SessionAuthentication → CSRF
+    authentication_classes = []
 
     def post(self, request):
-        data = request.data
+        data        = request.data
         email       = (data.get("email") or "").strip() or None
         amount_raw  = data.get("amount")
         token_dec   = int(data.get("token_decimals") or 18)
@@ -1165,24 +1160,23 @@ class GuestInitDepositView(APIView):
         except Exception:
             return Response({"error": "invalid amount"}, status=400)
 
-        # normalize click_id
+        # ✅ REQUIRE click_id from FE (no fallback)
         cid = data.get("click_id")
+        if not cid:
+            return Response({"error": "click_id is required"}, status=400)
         try:
-            click_id = UUID(str(cid)) if cid else uuid4()
+            click_id = UUID(str(cid))
         except Exception:
             return Response({"error": "invalid click_id"}, status=400)
 
-        # normalize/refall ref
+        # ✅ REQUIRE ref from FE (no fallback)
         ref_raw = data.get("ref")
-        if ref_raw:
-            ref_hex = str(ref_raw).lower()
-            if not ref_hex.startswith("0x"):
-                ref_hex = "0x" + ref_hex
-            if len(ref_hex) != 66:
-                return Response({"error": "invalid ref"}, status=400)
-            ref = ref_hex
-        else:
-            ref = Web3.keccak(text=str(click_id)).hex()
+        if not ref_raw:
+            return Response({"error": "ref is required"}, status=400)
+        ref_hex = str(ref_raw).lower()
+        if not ref_hex.startswith("0x") or len(ref_hex) != 66:
+            return Response({"error": "invalid ref"}, status=400)
+        ref = ref_hex
 
         campaign = None
         if campaign_id:
@@ -1192,36 +1186,36 @@ class GuestInitDepositView(APIView):
         from blockchain.models import GuestOrder, WertOrder
 
         defaults = {
-            "ref": ref,
-            "email": email,
-            "amount": amount_wei,
+            "ref":            ref,
+            "email":          email,
+            "amount":         amount_wei,
             "token_decimals": token_dec,
-            "campaign": campaign,
-            "entries": int(entries) if entries else None,
-            "status": GuestOrder.Status.CREATED,
+            "campaign":       campaign,
+            "entries":        int(entries) if entries else None,
+            "status":         GuestOrder.Status.CREATED,
         }
 
         obj, created = GuestOrder.objects.update_or_create(
             click_id=click_id, defaults=defaults
         )
 
-        # mirror WertOrder shell (useful for webhook reconciliation)
+        # mirror WertOrder shell (do NOT regenerate anything)
         WertOrder.objects.update_or_create(
             order_id=None,
             click_id=str(click_id),
             defaults={
-                "ref": ref,
-                "status": "created",
-                "token_amount_wei": amount_wei,
-                "campaign": campaign,
-                "entries": obj.entries,
+                "ref":               ref,
+                "status":            "created",
+                "token_amount_wei":  amount_wei,
+                "campaign":          campaign,
+                "entries":           obj.entries,
             }
         )
-        
-        
-        # no need to return IDs, but harmless if we do
-        return Response({"ok": True, "click_id": str(click_id), "ref": ref}, status=201 if created else 200)
-    
+
+        return Response(
+            {"ok": True, "click_id": str(click_id), "ref": ref},
+            status=201 if created else 200
+        )
     
 
 class GuestClaimView(APIView):
