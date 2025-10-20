@@ -9,7 +9,6 @@ from blockchain.utils import w3, contract
 from rest_framework.permissions import IsAuthenticated
 from uuid import uuid4
 from blockchain.models import Transaction, BalanceSnapshot, InfluencerTransaction, TransactionIssueReport, IssueAttachment
-from blockchain.tasks import _build_and_send, withdraw_for_user_task, save_transaction_info
 from decimal import Decimal, InvalidOperation
 import logging
 from web3.exceptions import ContractCustomError
@@ -41,6 +40,10 @@ from django.db.models.functions import Coalesce, Abs
 from celery import chain
 import base64
 from uuid import uuid4, UUID
+from blockchain.tx_utils import build_and_send as _build_and_send
+from blockchain.crypto_utils import b64u as _b64u, b64u_dec as _b64u_dec, sign as _sign
+from blockchain.tasks import withdraw_for_user_task, save_transaction_info
+
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +162,7 @@ class RegisterUserView(APIView):
     Body: { "user_id": "User123" }
     Only the OWNER may call this.
     """
+    
     def post(self, request):
         user_id = request.data.get("user_id")
         if not user_id:
@@ -186,6 +190,7 @@ class DepositView(APIView):
     Body: { "user_id": "User123", "amount": 12345 }
     Caller must approve the contract for `amount` TT first.
     """
+    
     def post(self, request):
         user_id = request.data.get("user_id")
         try:
@@ -219,6 +224,7 @@ class SetUserWalletView(APIView):
     Body: { "user_id": "User123", "wallet": "0xFanWallet…" }
     Only the OWNER may call this.
     """
+    
     def post(self, request):
         user_id = int(request.data["user_id"], 10)
         wallet  = request.data.get("wallet")
@@ -1217,16 +1223,6 @@ class GuestInitDepositView(APIView):
         return Response({"ok": True, "click_id": str(click_id), "ref": ref}, status=201 if created else 200)
     
     
-def _b64u(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-def _b64u_dec(s: str) -> bytes:
-    pad = "=" * (-len(s) % 4)
-    return base64.urlsafe_b64decode(s + pad)
-
-def _sign(data: str) -> str:
-    secret = os.getenv("GUEST_CLAIM_SECRET", settings.SECRET_KEY)
-    return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 class GuestClaimView(APIView):
     """
@@ -1235,6 +1231,7 @@ class GuestClaimView(APIView):
     Token payload = base64url("click_id|email|exp") + "." + hex(hmac)
     On success: creates/attaches user, calls claimPending(ref,userId).
     """
+    
     authentication_classes = []  # guest
     permission_classes = []
 

@@ -16,8 +16,11 @@ from decimal import Decimal, ROUND_DOWN
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 import time
-from .views import _b64u, _sign  # reuse your helpers
 from django.utils import timezone
+from blockchain.tx_utils import build_and_send as _build_and_send
+from blockchain.crypto_utils import b64u as _b64u, sign as _sign
+
+
 
 FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
 
@@ -77,12 +80,6 @@ def _sanitize_details_for_model(details: dict, model_cls) -> dict:
     model_field_names = {f.name for f in model_cls._meta.get_fields()}  # set comprehension
     return {k: _coerce_for_pg(v) for k, v in details.items() if k in model_field_names}  # dict comp
 
-
-def _build_and_send(fn, tx_params):
-    tx     = fn.build_transaction(tx_params)
-    signed = w3.eth.account.sign_transaction(tx, private_key=PK)
-    raw    = w3.eth.send_raw_transaction(signed.raw_transaction)
-    return raw.hex()
 
 # ── Helper to turn an integer Wei value into a float with one decimal ──
 def _wei_to_single_decimal(value_wei: int, decimals: int = 18) -> float:
