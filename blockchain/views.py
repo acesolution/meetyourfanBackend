@@ -677,10 +677,6 @@ class WertWebhookView(View):
                     for k, v in defaults.items():
                         setattr(obj, k, v)
                     obj.save(update_fields=list(defaults.keys()))
-                    
-            if new_status == "confirmed" and click_id:
-                from blockchain.tasks import notify_guest_claim_ready
-                notify_guest_claim_ready.delay(str(click_id))
 
         except Exception as e:
             logger.exception("Failed to upsert WertOrder: %s", e)
@@ -691,28 +687,57 @@ class WertWebhookView(View):
         # >>> INSERT THIS BLOCK HERE ↓↓↓
         from blockchain.models import GuestOrder
 
+        # 🔎 resolve GuestOrder first (FE is source of truth)
         go = None
         if click_id:
-            try:
-                go = GuestOrder.objects.get(click_id=UUID(str(click_id)))
+            try: go = GuestOrder.objects.get(click_id=UUID(str(click_id)))
             except (GuestOrder.DoesNotExist, ValueError):
                 go = None
 
-        # fallback by ref if needed (FE sends it to /guest/init-deposit/, so it should be there)
-        if go is None:
-            ref_val = (obj.ref or (payload.get("ref"))) if 'obj' in locals() else None
-            if ref_val:
-                go = GuestOrder.objects.filter(ref__iexact=str(ref_val)).first()
+        # optional: some providers may echo back the ref
+        payload_ref = payload.get("ref")
+        if go is None and payload_ref:
+            go = GuestOrder.objects.filter(ref__iexact=str(payload_ref)).first()
 
-        guest_map = {
-            "pending":   GuestOrder.Status.PENDING,
-            "confirmed": GuestOrder.Status.CONFIRMED,
-            "failed":    GuestOrder.Status.FAILED,
+        # Build defaults and include ref if we know it
+        defaults = {
+            "click_id":      click_id,
+            "tx_id":         tx_id,
+            "raw":           payload,
+            "token_symbol":  order.get("base"),
+            "fiat_currency": order.get("quote"),
+            "fiat_amount":   Decimal(order.get("quote_amount")) if order.get("quote_amount") else None,
+            "ref":           (go.ref if go else None),  # ✅ keep ref in the order-id row
         }
+        if new_status:
+            defaults["status"] = new_status
 
+        # 🧩 Merge with existing click_id row if present, else upsert by order_id
+        obj = WertOrder.objects.filter(click_id=str(click_id)).order_by('-updated_at').first()
+        if obj:
+            # update fields in-place
+            for k, v in defaults.items():
+                setattr(obj, k, v)
+            if order_id:
+                obj.order_id = order_id
+            # choose minimal set of fields to persist
+            update_fields = list(defaults.keys()) + (["order_id"] if order_id else [])
+            obj.save(update_fields=update_fields)
+        else:
+            obj, _ = WertOrder.objects.update_or_create(
+                order_id=order_id or None,
+                defaults=defaults
+            )
+
+        # 🔄 Reflect status into GuestOrder (if we found it)
         if go:
+            guest_map = {
+                "pending":   GuestOrder.Status.PENDING,
+                "confirmed": GuestOrder.Status.CONFIRMED,
+                "failed":    GuestOrder.Status.FAILED,
+            }
             updates = []
-            if new_status and new_status in guest_map:
+            if new_status in guest_map:
                 go.status = guest_map[new_status]; updates.append("status")
             if order_id and not go.order_id:
                 go.order_id = order_id; updates.append("order_id")
@@ -721,11 +746,11 @@ class WertWebhookView(View):
             if updates:
                 go.save(update_fields=updates)
 
-            # ✅ enqueue AFTER status is stored; use OUR UUID and only if we have an email
-            if new_status == "confirmed" and go.email:
-                notify_guest_claim_ready.delay(str(go.click_id))
+        # ✅ Enqueue ONCE, after both rows reflect "confirmed"
+        if new_status == "confirmed" and go and go.email:
+            from blockchain.tasks import notify_guest_claim_ready
+            notify_guest_claim_ready.delay(str(go.click_id))
 
-        logger.info("Wert webhook processed: type=%s order_id=%s status=%s", evt_type, order_id, obj.status)
         return JsonResponse({"ok": True})
 
 # Custom small wrapper to reuse DRF's page logic but expose metadata manually.
