@@ -20,7 +20,7 @@ def auto_register_user(sender, instance, created, **kwargs):
             # 2) save the OnChainAction once that hash is available:
             save_onchain_action_info.s(
                 # the tx_hash comes in automatically as the *first* arg here
-                instance.user_id,                    # user_id
+                instance.user.id,                    # user_id
                 None,                           # campaign_id (none for user)
                 OnChainAction.USER_REGISTERED,  # event_type
                 {}                              # args payload

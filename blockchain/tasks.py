@@ -801,7 +801,7 @@ def claim_guest_after_registration(self, click_id: str, user_id: int) -> str:
         # If you don't have a constant, use a string like "guest_claimed"
         save_onchain_action_info.delay(
             tx_hash,                      # tx hash from this claim
-            int(user_id),                 # user_id (on-chain id)
+            go.user_id,                 # user_id (on-chain id)
             go.campaign_id if go.campaign_id else None,
             getattr(OnChainAction, "GUEST_CLAIMED", "guest_claimed"),
             {"ref": go.ref, "click_id": str(go.click_id)},
