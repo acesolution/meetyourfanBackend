@@ -43,6 +43,10 @@ from uuid import uuid4, UUID
 from blockchain.tx_utils import build_and_send as _build_and_send
 from blockchain.crypto_utils import b64u as _b64u, b64u_dec as _b64u_dec, sign as _sign
 from blockchain.tasks import withdraw_for_user_task, save_transaction_info
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.db import IntegrityError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 logger = logging.getLogger(__name__)
@@ -1243,99 +1247,154 @@ class GuestInitDepositView(APIView):
         )
     
 
+def _unique_username(desired: str, User):
+    base = desired.strip() or "user"
+    candidate = base
+    i = 1
+    while User.objects.filter(username__iexact=candidate).exists():
+        i += 1
+        candidate = f"{base}{i}"
+    return candidate
+
 class GuestClaimView(APIView):
-    """
-    POST /api/guest/claim/
-    Body: { "token": "<opaque>" }
-    Token payload = base64url("click_id|email|exp") + "." + hex(hmac)
-    On success: creates/attaches user, calls claimPending(ref,userId).
-    """
-    
-    authentication_classes = []  # guest
+    authentication_classes = []
     permission_classes = []
 
     def post(self, request):
-        token = request.data.get("token")
+        token     = request.data.get("token")
+        username  = (request.data.get("username") or "").strip()
+        password  = request.data.get("password")
+
         if not token or "." not in token:
             return Response({"error":"invalid token"}, status=400)
-        payload_b64, sig = token.split(".", 1)
+
+        # --- verify token (same as your current code) ---
         try:
+            payload_b64, sig = token.split(".", 1)
             payload = _b64u_dec(payload_b64).decode()
             click_id, email, exp_s = payload.split("|", 2)
             exp = int(exp_s)
         except Exception:
             return Response({"error":"bad token"}, status=400)
-
-        # verify sig & expiry
         if _sign(payload) != sig:
             return Response({"error":"bad signature"}, status=400)
         if time.time() > exp:
-            return Response({"error":"token expired"}, status=400)
+            return Response({"error":"token expired"}, status=410)
 
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-
-        # find GuestOrder
         from blockchain.models import GuestOrder
         try:
             go = GuestOrder.objects.select_related("campaign").get(click_id=click_id)
         except GuestOrder.DoesNotExist:
             return Response({"error":"not found"}, status=404)
 
-        # create or attach user (very simplified)
-        user, _ = User.objects.get_or_create(email=email, defaults={"username": email})
-        go.user = user
+        User = get_user_model()
+        user = User.objects.filter(email__iexact=email).first()
 
-        # on-chain: ensure registered, then claimPending
+        # --- create or attach user ---
+        created = False
+        if not user:
+            if not username:
+                username = email.split("@", 1)[0]  # start from email prefix
+            username = _unique_username(username, User)
+            user = User(email=email, username=username)
+            # allow setting password at creation
+            if password:
+                try:
+                    validate_password(password, user)
+                except Exception as e:
+                    return Response({"error":"weak_password","detail":str(e)}, status=400)
+                user.set_password(password)
+            user.save()
+            created = True
+        else:
+            # user exists; set username if empty and provided
+            if not user.username and username:
+                user.username = _unique_username(username, User)
+            # only allow setting password if user has NO usable password yet
+            if password and not user.has_usable_password():
+                try:
+                    validate_password(password, user)
+                except Exception as e:
+                    return Response({"error":"weak_password","detail":str(e)}, status=400)
+                user.set_password(password)
+            elif not created and user.has_usable_password() and password:
+                # Email already belongs to an account with a password → ask to sign in
+                return Response({"code":"account_exists"}, status=409)
+            user.save()
+
+        go.user = user
+        go.save(update_fields=["user"])
+
+        # --- on-chain claim (your existing logic) ---
         try:
             chain_id = w3.eth.chain_id
             nonce    = w3.eth.get_transaction_count(OWNER)
             tx_params = {
-                "chainId":  chain_id,
-                "from":     OWNER,
-                "nonce":    nonce,
-                "gas":      GAS_LIMIT,
-                "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+                "chainId":  chain_id, "from": OWNER, "nonce": nonce,
+                "gas": GAS_LIMIT, "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
             }
-            # register if needed (safe to try — your SC checks exists)
             _build_and_send(contract.functions.registerUser(int(user.user_id)), tx_params)
-            # refresh nonce
             tx_params["nonce"] = w3.eth.get_transaction_count(OWNER)
-            # claim
-            tx_hash = _build_and_send(contract.functions.claimPending(go.ref, int(user.user_id)), tx_params)
+            _build_and_send(contract.functions.claimPending(go.ref, int(user.user_id)), tx_params)
             go.status = GuestOrder.Status.CLAIMED
-            go.save(update_fields=["user","status"])
+            go.save(update_fields=["status"])
         except Exception as e:
             logger.exception("claimPending failed: %s", e)
             return Response({"error":"on-chain claim failed"}, status=500)
 
-        # (optional) if this guest intent is tied to a campaign & entries, do holdForCampaign now
-        # NOTE: this requires OPERATOR_ROLE for backend signer.
-        if go.campaign_id and go.entries:
-            try:
-                # Compute spend in Wei = entries * 1 TT? If entries map 1:1 to TT, adjust as needed.
-                # Here we assume entries are denominated in TT Wei amount already stored → use go.amount
-                tp = {
-                    "chainId":  w3.eth.chain_id,
-                    "from":     OWNER,
-                    "nonce":    w3.eth.get_transaction_count(OWNER),
-                    "gas":      GAS_LIMIT,
-                    "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
-                }
-                # spentCreditWei must equal spentTTWei * conversionRate on-chain
-                spentTTWei     = int(go.amount)
-                conv           = int(get_current_rate_wei())
-                spentCreditWei = spentTTWei * conv
-                _build_and_send(
-                    contract.functions.holdForCampaign(
-                        int(go.campaign_id),
-                        int(user.user_id),
-                        spentTTWei,
-                        spentCreditWei,
-                    ),
-                    tp
-                )
-            except Exception:
-                logger.exception("holdForCampaign after claim failed")
+        # --- issue auth (JWT) ---
+        refresh = RefreshToken.for_user(user)
+        payload = {
+            "status": "ok",
+            "already_claimed": False,
+            "user": {"id": user.id, "email": user.email, "username": user.username},
+            "auth": {"access": str(refresh.access_token), "refresh": str(refresh)},
+        }
+        return Response(payload, status=200)
 
-        return Response({"status": "ok"})
+
+
+class GuestClaimPreviewView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        token = request.query_params.get("token")
+        if not token or "." not in token:
+            return Response({"error": "invalid token"}, status=400)
+
+        try:
+            payload_b64, sig = token.split(".", 1)
+            payload = _b64u_dec(payload_b64).decode()
+            click_id, email, exp_s = payload.split("|", 2)
+            exp = int(exp_s)
+        except Exception:
+            return Response({"error": "bad token"}, status=400)
+
+        if _sign(payload) != sig:
+            return Response({"error":"bad signature"}, status=400)
+        if time.time() > exp:
+            return Response({"error":"token expired"}, status=410)
+
+        from blockchain.models import GuestOrder
+        try:
+            go = GuestOrder.objects.get(click_id=click_id)
+        except GuestOrder.DoesNotExist:
+            return Response({"error":"not found"}, status=404)
+
+        already_claimed = (go.status == GuestOrder.Status.CLAIMED)
+        masked = self._mask(email)
+        return Response({
+            "email_masked": masked,
+            "expires_at": exp,
+            "already_claimed": already_claimed
+        })
+
+    @staticmethod
+    def _mask(email: str) -> str:
+        try:
+            name, dom = email.split("@", 1)
+            name_mask = name[:2] + "***" if len(name) > 2 else name[0] + "***"
+            return f"{name_mask}@{dom}"
+        except Exception:
+            return "***"

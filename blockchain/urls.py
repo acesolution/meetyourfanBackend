@@ -22,6 +22,7 @@ from .views import (
     DailyWithdrawUsageView,
     GuestInitDepositView,
     GuestClaimView,
+    GuestClaimPreviewView,
 )
 
 app_name = "blockchain"
@@ -47,4 +48,6 @@ urlpatterns = [
     path("withdraw/usage/", DailyWithdrawUsageView.as_view()),
     path("guest/init-deposit/", GuestInitDepositView.as_view(), name="guest-init-deposit"),
     path("guest/claim/",        GuestClaimView.as_view(),      name="guest-claim"),
+    path("guest/claim/preview/", GuestClaimPreviewView.as_view()),
+
 ]
