@@ -47,7 +47,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from django.db import transaction
+from blockchain.tasks import claim_guest_after_registration
 
 logger = logging.getLogger(__name__)
 
@@ -1325,24 +1326,13 @@ class GuestClaimView(APIView):
         go.user = user
         go.save(update_fields=["user"])
 
-        # --- on-chain claim (your existing logic) ---
-        try:
-            chain_id = w3.eth.chain_id
-            nonce    = w3.eth.get_transaction_count(OWNER)
-            tx_params = {
-                "chainId":  chain_id, "from": OWNER, "nonce": nonce,
-                "gas": GAS_LIMIT, "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
-            }
-            _build_and_send(contract.functions.registerUser(int(user.user_id)), tx_params)
-            tx_params["nonce"] = w3.eth.get_transaction_count(OWNER)
-            _build_and_send(contract.functions.claimPending(go.ref, int(user.user_id)), tx_params)
-            go.status = GuestOrder.Status.CLAIMED
-            go.save(update_fields=["status"])
-        except Exception as e:
-            logger.exception("claimPending failed: %s", e)
-            return Response({"error":"on-chain claim failed"}, status=500)
+        # 🚀 Kick the claim task after 30 seconds; it will retry until ready
+        transaction.on_commit(lambda: claim_guest_after_registration.apply_async(
+            kwargs={"click_id": str(go.click_id), "user_id": int(user.user_id)},
+            countdown=30
+        ))
 
-        # --- issue auth (JWT) ---
+        # ✅ Immediately issue auth back to FE; claim will complete async
         refresh = RefreshToken.for_user(user)
         payload = {
             "status": "ok",
@@ -1351,7 +1341,6 @@ class GuestClaimView(APIView):
             "auth": {"access": str(refresh.access_token), "refresh": str(refresh)},
         }
         return Response(payload, status=200)
-
 
 
 class GuestClaimPreviewView(APIView):

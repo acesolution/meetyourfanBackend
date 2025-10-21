@@ -719,3 +719,99 @@ def sweep_confirmed_guest_orders():
     for cid in qs:
         notify_guest_claim_ready.delay(str(cid))
     return f"queued {len(qs)}"
+
+def _is_user_registered(user_id: int) -> bool:
+    """
+    Prefer contract.isUserRegistered(userId).call() if present.
+    Otherwise, fall back to a harmless read that reverts for unregistered users,
+    e.g. getUserBalances(userId).
+    """
+    try:
+        # Try explicit boolean checker if your ABI has it
+        if hasattr(contract.functions, "isUserRegistered"):
+            return bool(contract.functions.isUserRegistered(int(user_id)).call({"from": OWNER}))
+        # Fallback: a view that only works for registered users
+        contract.functions.getUserBalances(int(user_id)).call({"from": OWNER})
+        return True
+    except Exception:
+        return False
+
+
+@shared_task(bind=True, max_retries=12, default_retry_delay=10)
+def claim_guest_after_registration(self, click_id: str, user_id: int) -> str:
+    """
+    Retries until:
+      - Wert order is confirmed
+      - user is registered on-chain
+    Then calls claimPending(ref, userId), saves status and an OnChainAction row.
+    """
+    from blockchain.models import GuestOrder, WertOrder
+
+    # 0) Load guest order
+    try:
+        go = GuestOrder.objects.select_related("campaign").get(click_id=UUID(str(click_id)))
+    except Exception:
+        return "guest_order_missing"
+
+    # Already done?
+    if go.status == GuestOrder.Status.CLAIMED:
+        return "already_claimed"
+
+    # 1) Wert must be confirmed
+    wo = (WertOrder.objects
+          .filter(click_id=str(go.click_id))
+          .order_by('-updated_at')
+          .first())
+    if not wo or wo.status != "confirmed":
+        # try again later
+        raise self.retry(exc=RuntimeError("wert not confirmed yet"))
+
+    # 2) User must be registered on chain
+    if not _is_user_registered(int(user_id)):
+        raise self.retry(exc=RuntimeError("user not registered on chain yet"))
+
+    # 3) Do the claim
+    try:
+        tx_params = {
+            "chainId":  w3.eth.chain_id,
+            "from":     OWNER,
+            "nonce":    w3.eth.get_transaction_count(OWNER),
+            "gas":      GAS_LIMIT,
+            "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+        }
+        tx_hash = _build_and_send(
+            contract.functions.claimPending(go.ref, int(user_id)),
+            tx_params
+        )
+
+        # Wait for mining (retry on timeout)
+        try:
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+        except TimeExhausted as exc:
+            raise self.retry(exc=exc)
+
+        if receipt.status != 1:
+            raise ContractLogicError("claimPending reverted")
+
+        # 4) Persist state and record the tx metadata
+        go.status = GuestOrder.Status.CLAIMED
+        go.save(update_fields=["status"])
+
+        # Record the tx like other actions (will call fetch_tx_details under the hood)
+        # If you don't have a constant, use a string like "guest_claimed"
+        save_onchain_action_info.delay(
+            tx_hash,                      # tx hash from this claim
+            int(user_id),                 # user_id (on-chain id)
+            go.campaign_id if go.campaign_id else None,
+            getattr(OnChainAction, "GUEST_CLAIMED", "guest_claimed"),
+            {"ref": go.ref, "click_id": str(go.click_id)},
+        )
+
+        return tx_hash
+
+    # If revert looks like "no pending" due to eventual consistency, retry
+    except ContractLogicError as e:
+        msg = str(e).lower()
+        if any(s in msg for s in ["pending", "not found", "no claim", "not funded"]):
+            raise self.retry(exc=e)
+        raise
