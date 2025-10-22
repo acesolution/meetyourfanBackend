@@ -71,7 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'channels',
-    'api',
+    'api.apps.ApiConfig',
     'rest_framework_simplejwt.token_blacklist',  # For JWT token management
     'drf_yasg',
     'profileapp',
@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'blockchain.apps.BlockchainConfig',
     "storages",
     "sociallogins",
+    
 ]
 
 MIDDLEWARE = [
