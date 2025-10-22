@@ -1334,11 +1334,30 @@ class GuestClaimView(APIView):
 
         # ✅ Immediately issue auth back to FE; claim will complete async
         refresh = RefreshToken.for_user(user)
+
+        campaign_payload = None
+        if go.campaign_id:
+            slug = getattr(go.campaign, "slug", None)
+            campaign_payload = {"id": go.campaign_id, "slug": slug}
+
         payload = {
             "status": "ok",
-            "already_claimed": False,
-            "user": {"id": user.id, "email": user.email, "username": user.username},
-            "auth": {"access": str(refresh.access_token), "refresh": str(refresh)},
+            "already_claimed": (go.status == GuestOrder.Status.CLAIMED),
+            "campaign": campaign_payload,                               # ✅ NEW
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "username": user.username,
+                "user_type": getattr(user, "user_type", "fan"),         # ✅ NEW
+                "phone_number": getattr(user, "phone_number", None),
+                "is_email_verified": True,                             # or your real flag
+                "is_phone_verified": False,
+                "profile": { "exists": True },                          # optional hint
+            },
+            "auth": {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            },
         }
         return Response(payload, status=200)
 
