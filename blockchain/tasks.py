@@ -21,6 +21,7 @@ from blockchain.tx_utils import build_and_send as _build_and_send
 from blockchain.crypto_utils import b64u as _b64u, sign as _sign
 from uuid import UUID
 from django.db import transaction
+from django.core.mail import EmailMultiAlternatives
 
 
 FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
@@ -679,24 +680,31 @@ def notify_guest_claim_ready(self, click_id: str):
             if amt_go is not None and amt_wo is not None and amt_go != amt_wo:
                 return f"amount mismatch go={amt_go} wo={amt_wo}"
 
+            subject = "Your MeetYourFan payment is confirmed — finish setup"
             claim_url = _compose_claim_link(str(go.click_id), go.email)
-            html = render_to_string("guest-claim-ready.html", {
-                "title": "Your payment is confirmed 🎉",
-                "intro": "Click the button below to claim your credits and complete your participation.",
+            context = {
+                "title": "Payment confirmed",
+                "intro": "Finish connecting your purchase to your MeetYourFan account.",
                 "cta_url": claim_url,
-                "footer": "If you didn’t make this purchase, ignore this email.",
-            })
-            send_mail(
-                subject="Payment confirmed — claim your credits",
-                message=f"Claim here: {claim_url}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[go.email],
-                html_message=html,
-                fail_silently=False,
-            )
+                "footer": "If you didn’t make this purchase, you can safely ignore this email.",
+            }
 
-            go.claim_email_sent_at = timezone.now()
-            go.save(update_fields=["claim_email_sent_at"])
+            html = render_to_string("guest-claim-ready.html", context)
+            text = render_to_string("guest-claim-ready.txt", context)
+
+            msg = EmailMultiAlternatives(
+                subject=subject,
+                body=text,  # plain-text part
+                from_email=settings.DEFAULT_FROM_EMAIL,  # e.g. "MeetYourFan <no-reply@meetyourfan.io>"
+                to=[go.email],
+                reply_to=[getattr(settings, "DEFAULT_REPLY_TO_EMAIL", settings.DEFAULT_FROM_EMAIL)],
+                headers={
+                    "List-Unsubscribe": f"<{FRONTEND_BASE_URL.rstrip('/')}/unsubscribe>",
+                    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                },
+            )
+            msg.attach_alternative(html, "text/html")
+            msg.send(fail_silently=False)
 
         return "sent"
 

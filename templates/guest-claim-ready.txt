@@ -1,0 +1,10 @@
+{{ title }}
+
+{{ intro }}
+
+Claim your credits:
+{{ cta_url }}
+
+If the button in the email didn’t work, copy and paste the link above into your browser.
+
+{{ footer }}
