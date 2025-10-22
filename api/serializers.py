@@ -64,11 +64,13 @@ class RegisterSerializer(serializers.ModelSerializer):
             user_type=validated_data.get('user_type', 'fan'),
         )
 
-        # Create profile instance with user set
-        profile = Profile.objects.create(user=user, **profile_data)
-
-        # Create verification code (optional)
-        VerificationCode.objects.create(user=user)
+        # If you want to apply incoming profile fields:
+        if profile_data:
+            # will exist because signal ran; but be defensive
+            profile, _ = Profile.objects.get_or_create(user=user)
+            for k, v in profile_data.items():
+                setattr(profile, k, v)
+            profile.save()
 
         return user
 
