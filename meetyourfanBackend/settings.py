@@ -310,12 +310,14 @@ LOGGING = {
             "handlers": ["console", "file"],
             "propagate": False,
         },
+        
+        "sociallogins": {                      # <--- ADD THIS BLOCK
+            "level": "DEBUG",                  # show .debug() and above
+            "handlers": ["console", "file"],   # send to both handlers
+            "propagate": False,                # built-in: don't bubble to root (avoid dupes)
+        },
     },
 }
-
-
-META_APP_ID = os.environ['META_APP_ID']
-META_APP_SECRET = os.environ['META_APP_SECRET']
 
 
 IG_APP_ID = os.environ["IG_APP_ID"]

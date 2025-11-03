@@ -6,7 +6,9 @@ from django.contrib.auth import get_user_model     # built-in: returns the activ
 from django.utils import timezone                  # built-in: timezone-aware "now"
 from datetime import timedelta                     # built-in: to add seconds to a datetime
 from .models import SocialProfile
+import logging
 
+logger = logging.getLogger("sociallogins")
 
 IG_APP_ID       = os.environ["IG_APP_ID"]
 IG_APP_SECRET   = os.environ["IG_APP_SECRET"]
@@ -65,6 +67,8 @@ def ig_login_start(request):
     """
     Step 1: send user to Instagram's OAuth authorize screen.
     """
+    logger.error("IG login start for user=%s IG_APP_ID=%s redirect=%s",
+                 getattr(request.user, "id", None), IG_APP_ID, IG_REDIRECT_URI)
     state = secrets.token_urlsafe(24)                         # built-in: random CSRF token
     request.session["ig_oauth_state"] = state                 # built-in: Django session store
 
@@ -95,6 +99,7 @@ def ig_login_callback(request):
     """
     code  = request.GET.get("code")
     state = request.GET.get("state")
+    logger.error("IG callback hit code=%s state=%s", code, state)
     _check_state(request.session, state)
 
     # 2a) code → short-lived Instagram User access token (expires ~1h)
