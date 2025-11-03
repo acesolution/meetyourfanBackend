@@ -8,7 +8,7 @@ from datetime import timedelta                     # built-in: to add seconds to
 from .models import SocialProfile
 import logging
 
-logger = logging.getLogger("sociallogins")
+logger = logging.getLogger(__name__)
 
 IG_APP_ID       = os.environ["IG_APP_ID"]
 IG_APP_SECRET   = os.environ["IG_APP_SECRET"]
