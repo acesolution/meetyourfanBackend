@@ -325,7 +325,7 @@ IG_APP_SECRET = os.environ["IG_APP_SECRET"]
 # This must EXACTLY match the redirect URI you register in the Meta app
 IG_REDIRECT_URI = os.environ.get(
     "IG_REDIRECT_URI",
-    "https://api.meetyourfan.io/social/instagram/callback/",
+    "https://api.meetyourfan.io/api/social-logins/auth/ig/callback/",
 )
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "https://meetyourfan.io")
