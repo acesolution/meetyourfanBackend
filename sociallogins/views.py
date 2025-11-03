@@ -1,133 +1,159 @@
-# sociallogins/views.py
-import os
-import secrets                                 # built-in: cryptographically strong tokens
-import requests                                # 3rd-party HTTP client for API calls
-from urllib.parse import urlencode             # built-in: dict -> querystring
-from django.http import HttpResponseBadRequest, HttpResponseRedirect
-# HttpResponseRedirect is a built-in 302 response class
-from django.shortcuts import redirect          # built-in shortcut to return 302
-from django.urls import reverse                # built-in: resolve view name -> path
-from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth import get_user_model
-from django.conf import settings
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from datetime import datetime, timedelta       # built-in: token expiry helpers
-from django.utils import timezone              # built-in: timezone-aware now()
+import os, secrets, requests
+from urllib.parse import urlencode                           # built-in: turns dict → querystring safely
+from django.http import HttpResponseRedirect, JsonResponse
+from django.core.exceptions import PermissionDenied
+from django.contrib.auth import get_user_model     # built-in: returns the active User model
+from django.utils import timezone                  # built-in: timezone-aware "now"
+from datetime import timedelta                     # built-in: to add seconds to a datetime
+from .models import SocialProfile
 
-User = get_user_model()
 
-IG_AUTH_URL = "https://api.instagram.com/oauth/authorize"
-IG_TOKEN_URL = "https://api.instagram.com/oauth/access_token"  # short-lived exchange
-# Long-lived exchange + refresh are on graph.instagram.com
-IG_LONG_LIVED_URL = "https://graph.instagram.com/access_token"
-IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
-IG_ME_URL = "https://graph.instagram.com/me"  # identity/profile
+IG_APP_ID       = os.environ["IG_APP_ID"]
+IG_APP_SECRET   = os.environ["IG_APP_SECRET"]
+IG_REDIRECT_URI = os.environ["IG_REDIRECT_URI"]
 
-def _abs_redirect_uri(request):
+def save_token(user_id: int, payload: dict):
     """
-    reverse() + build_absolute_uri() produces an absolute callback URL.
-    - reverse(name) -> '/social/instagram/callback/' (Django URL resolver, built-in)
-    - request.build_absolute_uri(path) -> 'https://api.example.com/social/...'
-    """
-    return request.build_absolute_uri(reverse("ig-login-callback"))
+    Persist the long-lived IG access token for this user.
 
-def instagram_start(request):
-    # Generate anti-CSRF state (built-in secrets.token_urlsafe)
-    state = secrets.token_urlsafe(32)
-    # Store state in the session (built-in request.session behaves like a dict)
-    request.session["ig_oauth_state"] = state
+    - get_user_model(): built-in — returns your AUTH_USER_MODEL.
+    - get_or_create(): built-in ORM helper, fetch existing row or create if missing.
+    """
+    User = get_user_model()
+    user = User.objects.get(pk=user_id)               # raises DoesNotExist if user missing
+    profile, created = SocialProfile.objects.get_or_create(user=user)
+
+    access = payload.get("access_token")
+    expires_in = payload.get("expires_in")            # number of seconds until expiry
+
+    profile.ig_access_token = access
+    if expires_in:
+        # timezone.now(): built-in — current aware datetime in your project timezone
+        # timedelta(seconds=...): built-in — represents "expires_in" seconds from now
+        profile.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
+    profile.save()
+
+    # optional: also store basic id/username right away if you want
+    # (you can call /me here once and update ig_user_id / ig_username.)
+
+def get_token(user_id: int) -> dict | None:
+    """
+    Fetch token for this user, if it exists.
+    Returns a simple dict so the rest of the code doesn't care about the DB.
+    """
+    User = get_user_model()
+    user = User.objects.get(pk=user_id)
+    try:
+        profile = user.social_profile                 # reverse OneToOne accessor
+    except SocialProfile.DoesNotExist:
+        return None
+
+    if not profile.ig_access_token:
+        return None
+
+    remaining = None
+    if profile.ig_token_expires_at:
+        # total_seconds(): built-in — convert time delta → float seconds
+        remaining = (profile.ig_token_expires_at - timezone.now()).total_seconds()
+
+    return {
+        "access_token": profile.ig_access_token,
+        "expires_in": remaining,
+    }
+
+def ig_login_start(request):
+    """
+    Step 1: send user to Instagram's OAuth authorize screen.
+    """
+    state = secrets.token_urlsafe(24)                         # built-in: random CSRF token
+    request.session["ig_oauth_state"] = state                 # built-in: Django session store
 
     params = {
-        "app_id": settings.INSTAGRAM_APP_ID,
-        "redirect_uri": settings.INSTAGRAM_REDIRECT_URI or _abs_redirect_uri(request),
-        "scope": "instagram_basic",  # request more only as needed
-        "response_type": "code",
+        "client_id": IG_APP_ID,
+        "redirect_uri": IG_REDIRECT_URI,
+        "scope": "user_profile,user_media",                   # minimal read scopes for profile/media
+        "response_type": "code",                              # tells IG we want an auth code back
         "state": state,
     }
-    # urlencode() turns dict -> properly escaped query string (?a=1&b=2)
-    url = f"{IG_AUTH_URL}?{urlencode(params)}"
-    return redirect(url)  # built-in shortcut to send 302 to Instagram
+    return HttpResponseRedirect(
+        "https://www.instagram.com/oauth/authorize/?" + urlencode(params)
+        # Instagram Login authorize endpoint. urlencode escapes safely. 
+    )  # :contentReference[oaicite:3]{index=3}
 
-@api_view(["GET"])
-def instagram_callback(request):
-    # Read query params (request.GET is a built-in dict-like QueryDict)
-    code = request.GET.get("code")
+def _check_state(session, incoming: str):
+    """
+    Compare state param from callback with stored value.
+    secrets.compare_digest → constant-time compare to avoid timing leaks.
+    """
+    expected = session.pop("ig_oauth_state", "")
+    if not secrets.compare_digest(expected, incoming or ""):
+        raise PermissionDenied("Bad state")
+
+def ig_login_callback(request):
+    """
+    Step 2: exchange 'code' → short-lived token, then → long-lived token.
+    """
+    code  = request.GET.get("code")
     state = request.GET.get("state")
-    saved_state = request.session.get("ig_oauth_state")
+    _check_state(request.session, state)
 
-    if not code or not state or state != saved_state:
-        return Response({"detail": "Invalid OAuth state/code."}, status=status.HTTP_400_BAD_REQUEST)
+    # 2a) code → short-lived Instagram User access token (expires ~1h)
+    # requests.post: built-in HTTP client; .json() parses JSON → dict
+    short = requests.post(
+        "https://api.instagram.com/oauth/access_token",
+        data={
+            "client_id": IG_APP_ID,
+            "client_secret": IG_APP_SECRET,
+            "grant_type": "authorization_code",
+            "redirect_uri": IG_REDIRECT_URI,
+            "code": code,
+        },
+        timeout=20,                                           # built-in: abort if server stalls >20s
+    ).json()                                                  # expected: { access_token, user_id, ... }
+    # :contentReference[oaicite:4]{index=4}
 
-    # 1) Exchange code -> short-lived token (expires ~1 hour)
-    # Docs: https://developers.facebook.com/docs/instagram-platform/reference/access_token/
-    data = {
-        "app_id": settings.INSTAGRAM_APP_ID,
-        "app_secret": settings.INSTAGRAM_APP_SECRET,
-        "grant_type": "authorization_code",
-        "redirect_uri": settings.INSTAGRAM_REDIRECT_URI or _abs_redirect_uri(request),
-        "code": code,
-    }
-    token_resp = requests.post(IG_TOKEN_URL, data=data)
-    tok = token_resp.json()
-    if "access_token" not in tok:
-        return Response({"detail": "Failed to get short-lived token", "raw": tok}, status=400)
+    # 2b) short-lived → long-lived (≈60 days)
+    longlived = requests.get(
+        "https://graph.instagram.com/access_token",
+        params={
+            "grant_type": "ig_exchange_token",
+            "client_secret": IG_APP_SECRET,
+            "access_token": short["access_token"],
+        },
+        timeout=20,
+    ).json()                                                  # expected: { access_token, token_type, expires_in }
+    # :contentReference[oaicite:5]{index=5}
 
-    short_token = tok["access_token"]
+    save_token(request.user.id, {
+        "access_token": longlived["access_token"],
+        "expires_in": longlived.get("expires_in"),
+    })
+    return HttpResponseRedirect("/settings/social/instagram")
 
-    # 2) Exchange short-lived -> long-lived (valid ~60 days)
-    # GET graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=...&access_token=...
-    # Docs: long-lived & refresh endpoints
-    ll_params = {
-        "grant_type": "ig_exchange_token",
-        "client_secret": settings.INSTAGRAM_APP_SECRET,
-        "access_token": short_token,
-    }
-    ll_resp = requests.get(IG_LONG_LIVED_URL, params=ll_params)
-    ll = ll_resp.json()
-    if "access_token" not in ll:
-        return Response({"detail": "Failed to get long-lived token", "raw": ll}, status=400)
+def verify_claimed_handle(request):
+    """
+    Step 3: prove ownership — fetch username from IG and compare to user claim.
+    Frontend posts `claimed_username`.
+    """
+    token = get_token(request.user.id)
+    if not token:
+        raise PermissionDenied("No IG token; connect first.")
 
-    long_token = ll["access_token"]
-    # Optional: tokens sometimes include 'expires_in' seconds
-    expires_at = timezone.now() + timedelta(days=59)
-
-    # 3) Get user profile (id, username)
-    me_params = {
-        "fields": "id,username,account_type",  # account_type helps enforce 'professional'
-        "access_token": long_token,
-    }
-    me_resp = requests.get(IG_ME_URL, params=me_params)
-    me = me_resp.json()
-    if "id" not in me:
-        return Response({"detail": "Failed to fetch IG profile", "raw": me}, status=400)
-
-    ig_id = str(me["id"])
-    username = me.get("username", f"ig_{ig_id}")
-    account_type = me.get("account_type", "")
-
-    # Enforce Professional accounts if your use-case requires it
-    if account_type not in {"BUSINESS", "CREATOR"}:
-        return Response({"detail": "Instagram Professional account required."}, status=403)
-
-    # 4) Get-or-create local user
-    user, _ = User.objects.get_or_create(
-        username=f"ig_{username}",
-        defaults={"email": "",},  # fill as needed
-    )
-    # Store tokens on a related model (pseudo code)
-    # SocialProfile.objects.update_or_create(
-    #     user=user, provider="instagram",
-    #     defaults={"provider_uid": ig_id, "access_token": long_token, "token_expires_at": expires_at},
-    # )
-
-    # 5) Issue your app token (DRF SimpleJWT example)
-    from rest_framework_simplejwt.tokens import RefreshToken  # third-party: JWT util
-    refresh = RefreshToken.for_user(user)  # creates a signed JWT pair for this user
-
-    # 6) Redirect back to FE with HttpOnly cookie (safer than query param)
-    resp = HttpResponseRedirect(f"{settings.FRONTEND_ORIGIN}/auth/callback")
-    # set_cookie is a built-in HttpResponse method
-    resp.set_cookie("auth_token", str(refresh.access_token), httponly=True, secure=True, samesite="Lax")
-    return resp
+    claimed = (request.GET.get("claimed_username") or "").strip().lower()
+    me = requests.get(
+        "https://graph.instagram.com/me",
+        params={
+            "fields": "id,username,account_type",
+            "access_token": token["access_token"],
+        },
+        timeout=15,
+    ).json()                                                  # built-in: parse JSON
+    # If the logged-in IG account's username == claimed → verified
+    verified = (me.get("username", "").lower() == claimed)
+    return JsonResponse({
+        "verified": verified,
+        "ig_user_id": me.get("id"),
+        "username": me.get("username"),
+        "account_type": me.get("account_type"),
+    })
+    # /me and fields usage for profile: id,username,… via Instagram Graph. :contentReference[oaicite:6]{index=6}

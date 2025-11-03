@@ -1175,6 +1175,7 @@ class GuestInitDepositView(APIView):
     authentication_classes = []
 
     def post(self, request):
+        logger.error("GuestInitDepositView payload=%s", data)
         data        = request.data
         email       = (data.get("email") or "").strip() or None
         amount_raw  = data.get("amount")
@@ -1265,6 +1266,7 @@ class GuestClaimView(APIView):
         token     = request.data.get("token")
         username  = (request.data.get("username") or "").strip()
         password  = request.data.get("password")
+        
 
         if not token or "." not in token:
             return Response({"error":"invalid token"}, status=400)

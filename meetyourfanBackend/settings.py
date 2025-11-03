@@ -314,21 +314,15 @@ LOGGING = {
 }
 
 
-
-# INSTAGRAM
-INSTAGRAM_CLIENT_ID = os.environ['INSTAGRAM_CLIENT_ID']
-INSTAGRAM_CLIENT_SECRET = os.environ['INSTAGRAM_CLIENT_SECRET']
-INSTAGRAM_REDIRECT_URI = os.environ['INSTAGRAM_REDIRECT_URI']
-
 META_APP_ID = os.environ['META_APP_ID']
 META_APP_SECRET = os.environ['META_APP_SECRET']
 
 
-INSTAGRAM_APP_ID = os.environ["INSTAGRAM_APP_ID"]
-INSTAGRAM_APP_SECRET = os.environ["INSTAGRAM_APP_SECRET"]
+IG_APP_ID = os.environ["IG_APP_ID"]
+IG_APP_SECRET = os.environ["IG_APP_SECRET"]
 # This must EXACTLY match the redirect URI you register in the Meta app
-INSTAGRAM_REDIRECT_URI = os.environ.get(
-    "INSTAGRAM_REDIRECT_URI",
+IG_REDIRECT_URI = os.environ.get(
+    "IG_REDIRECT_URI",
     "https://api.meetyourfan.io/social/instagram/callback/",
 )
 

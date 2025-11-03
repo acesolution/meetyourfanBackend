@@ -1,15 +1,27 @@
 # sociallogins/models.py
-from django.conf import settings                   # built-in: access AUTH_USER_MODEL
-from django.db import models                       # built-in: ORM base
+from django.conf import settings
+from django.db import models
+from django.utils import timezone              # built-in: timezone-aware now()
+from datetime import timedelta                 # built-in: represent "X seconds/minutes" time spans
 
 class SocialProfile(models.Model):
     user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,                  # built-in: FK to your User model
-        on_delete=models.CASCADE,                  # built-in: cascade on delete
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
         related_name="social_profile",
     )
     ig_user_id = models.CharField(max_length=64, blank=True, null=True)
     ig_username = models.CharField(max_length=150, blank=True, null=True)
 
-    def __str__(self):                             # built-in: string shown in admin/shell
+    # store token + optional expiry
+    ig_access_token = models.TextField(blank=True, null=True)
+    ig_token_expires_at = models.DateTimeField(blank=True, null=True)
+
+    def has_ig_token(self) -> bool:
+        """
+        Simple helper: tells you if we currently have an IG token on file.
+        """
+        return bool(self.ig_access_token)
+
+    def __str__(self):
         return f"{self.user} / @{self.ig_username or '—'}"
