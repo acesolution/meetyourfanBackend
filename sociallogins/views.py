@@ -12,6 +12,9 @@ from django.utils import timezone                # built-in: timezone-aware "now
 from django.conf import settings                 # built-in: access Django settings
 from .models import SocialProfile
 import logging
+from django.contrib.auth import login
+
+from django.shortcuts import redirect, render
 
 logger = logging.getLogger("sociallogins")       # use the named logger we wired in settings
 
@@ -102,30 +105,16 @@ def get_token(user_id: int) -> dict | None:
 
 def ig_login_start(request):
     """
-    Step 1: send user to Instagram's OAuth authorize screen (Instagram Login, NOT FB login).
+    Redirects the user to the Instagram authorization URL.
     """
-    logger.info(
-        "IG login start; IG_APP_ID=%s IG_REDIRECT_URI=%s",
-        IG_APP_ID,
-        IG_REDIRECT_URI,
+    auth_url = (
+        f"https://api.instagram.com/oauth/authorize?"
+        f"client_id={settings.IG_APP_ID}&"
+        f"redirect_uri={settings.IG_REDIRECT_URI}&"
+        f"scope=user_profile,user_media&" # Request necessary permissions (scopes)
+        f"response_type=code"
     )
-
-    state = secrets.token_urlsafe(24)                # built-in: crypto-strong random CSRF token
-    request.session["ig_oauth_state"] = state        # built-in: per-user session storage
-
-    # IMPORTANT:
-    #  - endpoint: https://api.instagram.com/oauth/authorize
-    #  - param:   app_id   (NOT client_id)
-    params = {
-        "app_id": IG_APP_ID,
-        "redirect_uri": IG_REDIRECT_URI,
-        "scope": "user_profile,user_media",          # request profile + media access
-        "response_type": "code",
-        "state": state,
-    }
-    auth_url = "https://api.instagram.com/oauth/authorize?" + urlencode(params)
-    logger.info("IG auth URL: %s", auth_url)         # see exactly what we're sending
-    return HttpResponseRedirect(auth_url)
+    return redirect(auth_url)
 
 
 
@@ -142,58 +131,40 @@ def _check_state(session, incoming: str):
 
 def ig_login_callback(request):
     """
-    Step 2: exchange 'code' → short-lived token, then → long-lived token,
-    and store it in the SESSION (no MYF auth required).
+    Handles the redirect from Instagram, exchanges the code for an access token,
+    and logs the user into Django.
     """
-    code  = request.GET.get("code")
-    state = request.GET.get("state")
-    logger.info("IG callback hit code=%s state=%s", code, state)
+    code = request.GET.get('code')
+    if not code:
+        # Handle error or denial of permissions
+        return render(request, 'login_failed.html', {'error': 'User denied access'})
 
-    _check_state(request.session, state)
+    # Exchange the code for a short-lived access token
+    token_url = 'https://api.instagram.com/oauth/access_token'
+    data = {
+        'client_id': settings.IG_APP_ID,
+        'client_secret': settings.IG_APP_SECRET,
+        'grant_type': 'authorization_code',
+        'redirect_uri': settings.IG_REDIRECT_URI,
+        'code': code,
+    }
+    response = requests.post(token_url, data=data)
+    token_data = response.json()
 
-    # 2a) code → short-lived Instagram User access token (expires ~1h)
-    short = requests.post(
-        "https://api.instagram.com/oauth/access_token",
-        data={
-            "app_id": IG_APP_ID,
-            "app_secret": IG_APP_SECRET,
-            "grant_type": "authorization_code",
-            "redirect_uri": IG_REDIRECT_URI,
-            "code": code,
-        },
-        timeout=20,                                   # built-in: abort if server stalls >20s
-    ).json()
+    if 'access_token' not in token_data:
+        # Handle error in token exchange
+        return render(request, 'login_failed.html', {'error': 'Failed to obtain access token'})
 
-    if "access_token" not in short:
-        logger.error("Failed to get short-lived IG token: %s", short)
-        return JsonResponse({"ok": False, "error": "short_token_failed", "raw": short}, status=400)
+    access_token = token_data['access_token']
+    user_id = token_data['user_id'] # Use this ID to uniquely identify the user
 
-    # 2b) short-lived → long-lived (≈60 days) stays the same
-    longlived = requests.get(
-        "https://graph.instagram.com/access_token",
-        params={
-            "grant_type": "ig_exchange_token",
-            "client_secret": IG_APP_SECRET,
-            "access_token": short["access_token"],
-        },
-        timeout=20,
-    ).json()
+    # Here you would typically exchange the short-lived token for a long-lived one (60 days)
+    # and store it in your database, linked to your Django User model.
 
-    if "access_token" not in longlived:
-        logger.error("Failed to get long-lived IG token: %s", longlived)
-        return JsonResponse({"ok": False, "error": "long_token_failed", "raw": longlived}, status=400)
+    
 
-    # Save token in SESSION (no request.user needed)
-    save_token_session(request, {
-        "access_token": longlived["access_token"],
-        "expires_in": longlived.get("expires_in"),
-    })
-
-    # Option 1: redirect back to your frontend (recommended)
-    return HttpResponseRedirect(f"{settings.FRONTEND_ORIGIN}/authentication/login?ig=connected")
-
-    # Option 2 (if you ever want): return JSON instead of redirect
-    # return JsonResponse({"ok": True})
+    logger.info("User %s logged in via IG", user_id, access_token)
+    return redirect('home') # Redirect to your desired post-login page
 
 
 def verify_claimed_handle(request):
