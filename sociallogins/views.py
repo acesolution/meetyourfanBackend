@@ -105,18 +105,26 @@ def get_token(user_id: int) -> dict | None:
 
 def ig_login_start(request):
     """
-    Redirects the user to the Instagram authorization URL.
+    Step 1: send user to Instagram's OAuth authorize screen (new Instagram Login).
     """
-    auth_url = (
-        f"https://api.instagram.com/oauth/authorize?"
-        f"client_id={settings.IG_APP_ID}&"
-        f"redirect_uri={settings.IG_REDIRECT_URI}&"
-        f"scope=user_profile,user_media&" # Request necessary permissions (scopes)
-        f"response_type=code"
-    )
-    logger.info("Redirecting to IG auth URL: %s", auth_url)
-    return redirect(auth_url)
+    state = secrets.token_urlsafe(24)
+    request.session["ig_oauth_state"] = state
 
+    params = {
+        # still called client_id in the URL, but value must be your **Instagram app ID**
+        "client_id": IG_APP_ID,
+        "redirect_uri": IG_REDIRECT_URI,
+        # NEW scopes for Instagram API with Instagram Login (Business)
+        # you probably only need instagram_business_basic for verification
+        "scope": "instagram_business_basic",
+        "response_type": "code",
+        "state": state,
+    }
+
+    auth_url = "https://api.instagram.com/oauth/authorize?" + urlencode(params)
+    logger.info("Redirecting to IG auth URL: %s", auth_url)
+
+    return HttpResponseRedirect(auth_url)
 
 
 def _check_state(session, incoming: str):
