@@ -114,6 +114,7 @@ def ig_login_start(request):
         f"scope=user_profile,user_media&" # Request necessary permissions (scopes)
         f"response_type=code"
     )
+    logger.info("Redirecting to IG auth URL: %s", auth_url)
     return redirect(auth_url)
 
 
@@ -148,8 +149,10 @@ def ig_login_callback(request):
         'redirect_uri': settings.IG_REDIRECT_URI,
         'code': code,
     }
+    logger.info("Exchanging code for IG access token", data)
     response = requests.post(token_url, data=data)
     token_data = response.json()
+    logger.info("Received IG token data: %s", token_data)
 
     if 'access_token' not in token_data:
         # Handle error in token exchange
