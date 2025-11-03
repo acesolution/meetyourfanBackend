@@ -98,9 +98,11 @@ def get_token(user_id: int) -> dict | None:
 
 # ---- OAUTH VIEWS ------------------------------------------------------------
 
+# sociallogins/views.py
+
 def ig_login_start(request):
     """
-    Step 1: send user to Instagram's OAuth authorize screen.
+    Step 1: send user to Instagram's OAuth authorize screen (Instagram Login, NOT FB login).
     """
     logger.info(
         "IG login start; IG_APP_ID=%s IG_REDIRECT_URI=%s",
@@ -108,20 +110,23 @@ def ig_login_start(request):
         IG_REDIRECT_URI,
     )
 
-    state = secrets.token_urlsafe(24)                # built-in: random URL-safe CSRF token
+    state = secrets.token_urlsafe(24)                # built-in: crypto-strong random CSRF token
     request.session["ig_oauth_state"] = state        # built-in: per-user session storage
 
+    # IMPORTANT:
+    #  - endpoint: https://api.instagram.com/oauth/authorize
+    #  - param:   app_id   (NOT client_id)
     params = {
-        "client_id": IG_APP_ID,
+        "app_id": IG_APP_ID,
         "redirect_uri": IG_REDIRECT_URI,
-        "scope": "user_profile,user_media",          # minimal read scopes for profile/media
-        "response_type": "code",                     # ask IG to return an auth code
+        "scope": "user_profile,user_media",          # request profile + media access
+        "response_type": "code",
         "state": state,
     }
-    return HttpResponseRedirect(
-        "https://www.instagram.com/oauth/authorize/?" + urlencode(params)
-        # urlencode: built-in — serializes dict → "a=b&c=d" with proper escaping
-    )
+    auth_url = "https://api.instagram.com/oauth/authorize?" + urlencode(params)
+    logger.info("IG auth URL: %s", auth_url)         # see exactly what we're sending
+    return HttpResponseRedirect(auth_url)
+
 
 
 def _check_state(session, incoming: str):
@@ -150,20 +155,20 @@ def ig_login_callback(request):
     short = requests.post(
         "https://api.instagram.com/oauth/access_token",
         data={
-            "client_id": IG_APP_ID,
-            "client_secret": IG_APP_SECRET,
+            "app_id": IG_APP_ID,
+            "app_secret": IG_APP_SECRET,
             "grant_type": "authorization_code",
             "redirect_uri": IG_REDIRECT_URI,
             "code": code,
         },
         timeout=20,                                   # built-in: abort if server stalls >20s
-    ).json()                                         # built-in: parse JSON body -> dict
+    ).json()
 
     if "access_token" not in short:
         logger.error("Failed to get short-lived IG token: %s", short)
         return JsonResponse({"ok": False, "error": "short_token_failed", "raw": short}, status=400)
 
-    # 2b) short-lived → long-lived (≈60 days)
+    # 2b) short-lived → long-lived (≈60 days) stays the same
     longlived = requests.get(
         "https://graph.instagram.com/access_token",
         params={
