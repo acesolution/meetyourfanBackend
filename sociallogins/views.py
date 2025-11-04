@@ -231,7 +231,7 @@ def ig_login_callback(request):
     # --- 2d) redirect to FE "Confirm username" screen ---------------------
     # e.g. /influencer/instagram/confirm-username?ig_username=<name>
     redirect_url = (
-        f"{settings.FRONTEND_BASE_URL}/authentication/instagram-connection-sucess"
+        f"{settings.FRONTEND_BASE_URL}/instagram-connection-sucess"
         f"?ig_username={username or ''}"
     )
     return HttpResponseRedirect(redirect_url)   # built-in: HTTP 302 with Location header
