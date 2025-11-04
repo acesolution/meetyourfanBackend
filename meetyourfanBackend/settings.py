@@ -370,3 +370,5 @@ CLOUDFRONT_DOMAIN = os.environ['CLOUDFRONT_DOMAIN']
 
 MEDIA_TOKEN_SALT = "media-access"
 MEDIA_TOKEN_TTL  = 300
+
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://meetyourfan.io")
