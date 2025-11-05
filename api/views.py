@@ -48,7 +48,7 @@ from django.core.exceptions import ValidationError
 import logging
 from blockchain.tasks import register_user_on_chain
 from django.db import transaction
-from django.db.models import Sum
+from api.utils import generate_unique_username
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
