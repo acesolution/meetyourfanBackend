@@ -106,6 +106,10 @@ def ig_login_start(request):
     """
     state = secrets.token_urlsafe(24)
     request.session["ig_oauth_state"] = state
+    
+    # remember where this was started from ("onboarding" vs "settings")
+    flow = request.GET.get("flow") or "settings"
+    request.session["ig_flow"] = flow               # keep it short-lived in session
 
     params = {
         # still called client_id in the URL, but value must be your **Instagram app ID**
@@ -229,48 +233,11 @@ def ig_login_callback(request):
                     request.user.id, username)
 
     # --- 2d) redirect to FE "Confirm username" screen ---------------------
-    # e.g. /influencer/instagram/confirm-username?ig_username=<name>
+    flow = request.session.pop("ig_flow", "settings")  # built-in: pop removes key if present
+
     redirect_url = (
         f"{settings.FRONTEND_BASE_URL}/instagram-connection-sucess"
         f"?ig_username={username or ''}"
+        f"&from={flow}"
     )
-    return HttpResponseRedirect(redirect_url)   # built-in: HTTP 302 with Location header
-
-
-def verify_claimed_handle(request):
-    """
-    Step 3: prove ownership — fetch username from IG and compare to user claim.
-
-    Uses the IG token from the SESSION, not from any MYF user record.
-    Frontend should pass ?claimed_username=<handle>.
-    """
-    token = get_token_session(request)
-    if not token:
-        raise PermissionDenied("No IG token in session; connect first.")
-
-    claimed = (request.GET.get("claimed_username") or "").strip().lower()
-    logger.info("Verifying claimed IG handle '%s' using session token", claimed)
-
-    me = requests.get(
-        "https://graph.instagram.com/me",
-        params={
-            "fields": "id,username,account_type",
-            "access_token": token["access_token"],
-        },
-        timeout=15,
-    ).json()
-
-    if "id" not in me:
-        logger.error("Failed to fetch IG profile with session token: %s", me)
-        return JsonResponse({"ok": False, "error": "profile_failed", "raw": me}, status=400)
-
-    username = (me.get("username") or "").lower()
-    verified = (username == claimed)
-
-    return JsonResponse({
-        "ok": True,
-        "verified": verified,
-        "ig_user_id": me.get("id"),
-        "username": me.get("username"),
-        "account_type": me.get("account_type"),
-    })
+    return HttpResponseRedirect(redirect_url)

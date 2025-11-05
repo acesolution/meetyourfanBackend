@@ -1114,3 +1114,97 @@ class CoverFocalUpdateView(APIView):
             {'cover_focal_x': prof.cover_focal_x, 'cover_focal_y': prof.cover_focal_y},
             status=status.HTTP_200_OK
         )
+        
+        
+class UpdateUsernameView(APIView):
+    """
+    PATCH /api/profile/update-username/
+
+    Body: { "username": "<desired>" }
+
+    Behaviour:
+    - If desired username is free → assign to current user.
+    - If used by another user:
+        * Give that old owner a new fallback username derived from their
+          Profile.name or email local-part, made unique.
+        * Then give the desired username to the current user.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def patch(self, request):
+        User = get_user_model()
+        user = request.user
+
+        desired = (request.data.get("username") or "").strip()
+        if not desired:
+            return Response(
+                {"error": "Username is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Optional: same validation as CheckUsernameAvailabilityView
+        if not re.match(USERNAME_REGEX, desired):
+            return Response(
+                {"error": "Invalid username format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # If it's already the same (case-insensitive), nothing to change
+        if user.username and user.username.lower() == desired.lower():
+            return Response(
+                {"ok": True, "username": user.username},
+                status=status.HTTP_200_OK,
+            )
+
+        # Lock any existing owner row to avoid race conditions while we juggle names
+        existing_qs = (
+            User.objects
+            .select_for_update()
+            .filter(username__iexact=desired)
+        )
+
+        if existing_qs.exists():
+            existing_user = existing_qs.first()
+
+            # If some OTHER user owns this username, we bump them to a fallback
+            if existing_user.pk != user.pk:
+                base = None
+
+                # Prefer profile.name as base if available
+                try:
+                    if hasattr(existing_user, "profile") and existing_user.profile.name:
+                        base = existing_user.profile.name
+                except Profile.DoesNotExist:
+                    base = None
+
+                # Fallback to email local-part
+                if not base:
+                    email = existing_user.email or ""
+                    base = email.split("@")[0] or "user"
+
+                fallback_username = generate_unique_username(
+                    base,
+                    exclude_user_id=existing_user.pk,
+                )
+
+                existing_user.username = fallback_username
+                existing_user.save(update_fields=["username"])
+
+        # Now the desired username should be free → assign to current user
+        user.username = desired
+        user.save(update_fields=["username"])
+
+        return Response(
+            {
+                "ok": True,
+                "username": user.username,
+                # If later you want, you can also return profile data here:
+                # "profile": ProfileSerializer(user.profile).data
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # If you also want to support PUT, you can just forward to patch:
+    def put(self, request, *args, **kwargs):
+        return self.patch(request, *args, **kwargs)

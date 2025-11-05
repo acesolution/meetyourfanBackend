@@ -30,7 +30,8 @@ from .views import (
     GuestCampaignPurchaseView,
     DeleteCoverPhotoView,
     DeleteProfilePictureView,
-    CoverFocalUpdateView
+    CoverFocalUpdateView,
+    UpdateUsernameView,
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -76,5 +77,6 @@ urlpatterns = [
     path('social-links/<int:pk>/', SocialMediaLinkDetailAPIView.as_view(), name='social-links-detail'),
     path('guest/campaign/purchase/', GuestCampaignPurchaseView.as_view(), name='guest-campaign-purchase'),
     path('profile/cover-focal/', CoverFocalUpdateView.as_view(), name='guest-campaign-purchase'),
+    path("profile/update-username/", UpdateUsernameView.as_view(), name="profile-update-username",),
 
 ]
