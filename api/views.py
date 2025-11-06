@@ -3,7 +3,7 @@
 from django.shortcuts import render
 from rest_framework import generics
 from rest_framework.renderers import JSONRenderer
-from api.models import Profile, VerificationCode, SocialMediaLink
+from api.models import Profile, VerificationCode, SocialMediaLink, UsernameResetToken
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.template.loader import render_to_string
@@ -46,9 +46,8 @@ from django.db.models import Count
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 import logging
-from blockchain.tasks import register_user_on_chain
-from django.db import transaction
-from api.utils import generate_unique_username
+from api.utils import generate_unique_username_for_user
+import secrets
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -1114,97 +1113,274 @@ class CoverFocalUpdateView(APIView):
             {'cover_focal_x': prof.cover_focal_x, 'cover_focal_y': prof.cover_focal_y},
             status=status.HTTP_200_OK
         )
-        
-        
+
+
+def create_username_reset_token(user) -> str:
+    """
+    Create a one-time username reset token for the given user.
+    """
+    for _ in range(5):  # a few attempts to avoid rare collisions
+        token = secrets.token_urlsafe(32)
+        if not UsernameResetToken.objects.filter(token=token).exists():
+            UsernameResetToken.objects.create(user=user, token=token)
+            return token
+    raise RuntimeError("Could not generate a unique username reset token")
+
+
+def send_username_reassigned_email(user, old_username: str, new_username: str, reset_token: str) -> None:
+    """
+    Email the user that their username was reassigned, and give them
+    a one-time link to pick a new username.
+    """
+    reset_url = f"{settings.FRONTEND_ORIGIN}/authentication/username-reset?token={reset_token}"
+
+    subject = "Your MeetYourFan username has been updated"
+
+    plain_message = (
+        f"Hi {user.username},\n\n"
+        f"Your previous username @{old_username} has been reassigned to a verified creator on MeetYourFan.\n"
+        f"Your current username is now @{new_username}.\n\n"
+        f"If you’d like to choose a new username, you can use this one-time link:\n"
+        f"{reset_url}\n\n"
+        "If you do nothing, your current username will stay as it is."
+    )
+
+    html_message = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8" />
+      <title>Your MeetYourFan username has been updated</title>
+    </head>
+    <body style="margin:0; padding:0; background-color:#ffffff; font-family:Arial,sans-serif;">
+      <table width="100%" bgcolor="#ffffff" style="padding:1rem 0;" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center">
+            <table width="400" border="0" cellspacing="0" cellpadding="0"
+                   style="background-color:#ffffff; border-radius:30px; overflow:hidden;
+                          border:1px solid rgba(0,0,0,0.1); box-shadow:0 8px 20px rgba(0,0,0,0.1);">
+              <tr>
+                <td style="padding:2rem;">
+                  <div style="text-align:center; margin-bottom:1.5rem;">
+                    <img src="https://meetyourfans3bucket.s3.us-east-1.amazonaws.com/static/images_folder/MeetYourFanLogoHorizontal-v2.png"
+                         alt="MeetYourFan" style="max-width:150px;">
+                  </div>
+                  <h2 style="font-size:22px; color:#000; margin-bottom:1rem; text-align:center;">
+                    Your username has been updated
+                  </h2>
+                  <p style="font-size:15px; color:#333; margin-bottom:1rem; text-align:center;">
+                    Your previous username <strong>@{old_username}</strong> has been reassigned
+                    to a verified creator on MeetYourFan.
+                  </p>
+                  <p style="font-size:15px; color:#333; margin-bottom:1.5rem; text-align:center;">
+                    Your new username is now <strong>@{new_username}</strong>.
+                  </p>
+                  <div style="text-align:center; margin:2rem 0;">
+                    <a href="{reset_url}"
+                       style="display:inline-block; background-color:#6A0DAD; color:#ffffff;
+                              padding:0.75rem 1.5rem; border-radius:9999px; font-size:15px;
+                              text-decoration:none;">
+                      Choose a different username
+                    </a>
+                  </div>
+                  <p style="font-size:13px; color:#555; text-align:center; line-height:1.6;">
+                    This is a one-time link. If you don’t change anything, your current username
+                    will remain <strong>@{new_username}</strong>.
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+    """
+
+    send_mail(
+        subject=subject,
+        message=plain_message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=False,
+        html_message=html_message,
+    )
+
+
+
 class UpdateUsernameView(APIView):
     """
     PATCH /api/profile/update-username/
 
-    Body: { "username": "<desired>" }
+    Used when:
+      - IG success screen: user claims their Instagram username.
+      - (Optionally) other flows that want to set a new username.
 
     Behaviour:
-    - If desired username is free → assign to current user.
-    - If used by another user:
-        * Give that old owner a new fallback username derived from their
-          Profile.name or email local-part, made unique.
-        * Then give the desired username to the current user.
+      - Validate new username format.
+      - If someone else already has that username:
+          * generate a new unique username for that old owner,
+          * save it,
+          * send them an email with a one-time reset link.
+      - Then assign the requested username to the current user.
     """
     permission_classes = [IsAuthenticated]
 
-    @transaction.atomic
     def patch(self, request):
-        User = get_user_model()
+        new_username = (request.data.get("username") or "").strip()
         user = request.user
 
-        desired = (request.data.get("username") or "").strip()
-        if not desired:
+        if not new_username:
             return Response(
                 {"error": "Username is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Optional: same validation as CheckUsernameAvailabilityView
-        if not re.match(USERNAME_REGEX, desired):
+        if not re.match(USERNAME_REGEX, new_username):
             return Response(
                 {"error": "Invalid username format."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # If it's already the same (case-insensitive), nothing to change
-        if user.username and user.username.lower() == desired.lower():
-            return Response(
-                {"ok": True, "username": user.username},
-                status=status.HTTP_200_OK,
-            )
+        new_username_lower = new_username.lower()
 
-        # Lock any existing owner row to avoid race conditions while we juggle names
-        existing_qs = (
+        # If it's already their current username, nothing to do.
+        if user.username and user.username.lower() == new_username_lower:
+            prof = getattr(user, "profile", None)
+            data = {
+                "username": user.username,
+            }
+            if prof:
+                data["profile"] = ProfileSerializer(prof, context={"request": request}).data
+            return Response(data, status=status.HTTP_200_OK)
+
+        # Check if someone else currently owns that username
+        existing_owner = (
             User.objects
-            .select_for_update()
-            .filter(username__iexact=desired)
+            .filter(username__iexact=new_username)
+            .exclude(pk=user.pk)
+            .select_related("profile")
+            .first()
         )
 
-        if existing_qs.exists():
-            existing_user = existing_qs.first()
+        if existing_owner:
+            old_username = existing_owner.username
 
-            # If some OTHER user owns this username, we bump them to a fallback
-            if existing_user.pk != user.pk:
+            # Derive a base from their profile name, or email prefix, or fallback
+            base = None
+            try:
+                base = existing_owner.profile.name or None
+            except Exception:
                 base = None
 
-                # Prefer profile.name as base if available
-                try:
-                    if hasattr(existing_user, "profile") and existing_user.profile.name:
-                        base = existing_user.profile.name
-                except Profile.DoesNotExist:
-                    base = None
+            if not base:
+                if existing_owner.email:
+                    base = existing_owner.email.split("@")[0]
+                else:
+                    base = f"user{existing_owner.pk}"
 
-                # Fallback to email local-part
-                if not base:
-                    email = existing_user.email or ""
-                    base = email.split("@")[0] or "user"
+            new_for_existing = generate_unique_username_for_user(base, skip_user_id=None)
 
-                fallback_username = generate_unique_username(
-                    base,
-                    exclude_user_id=existing_user.pk,
-                )
+            existing_owner.username = new_for_existing
+            existing_owner.save(update_fields=["username"])
 
-                existing_user.username = fallback_username
-                existing_user.save(update_fields=["username"])
+            # Create one-time reset token and email them
+            reset_token = create_username_reset_token(existing_owner)
+            send_username_reassigned_email(
+                user=existing_owner,
+                old_username=old_username,
+                new_username=new_for_existing,
+                reset_token=reset_token,
+            )
 
-        # Now the desired username should be free → assign to current user
-        user.username = desired
+            logger.info(
+                "Reassigned username '%s' from user_id=%s to user_id=%s, "
+                "old owner now '%s'",
+                old_username,
+                existing_owner.id,
+                user.id,
+                new_for_existing,
+            )
+
+        # Now we can safely assign the requested username to the current user
+        user.username = new_username
         user.save(update_fields=["username"])
 
-        return Response(
-            {
-                "ok": True,
-                "username": user.username,
-                # If later you want, you can also return profile data here:
-                # "profile": ProfileSerializer(user.profile).data
-            },
-            status=status.HTTP_200_OK,
-        )
+        prof = getattr(user, "profile", None)
+        data = {
+            "username": user.username,
+        }
+        if prof:
+            data["profile"] = ProfileSerializer(prof, context={"request": request}).data
 
-    # If you also want to support PUT, you can just forward to patch:
-    def put(self, request, *args, **kwargs):
-        return self.patch(request, *args, **kwargs)
+        return Response(data, status=status.HTTP_200_OK)
+
+
+
+class UsernameResetByTokenView(APIView):
+    """
+    POST /api/profile/username-reset/
+
+    Body:
+      - token: the one-time token from the email
+      - username: desired new username
+
+    Behaviour:
+      - validate token (exists, not used, not too old)
+      - validate username format + availability
+      - update user's username
+      - mark token as used
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = (request.data.get("token") or "").strip()
+        new_username = (request.data.get("username") or "").strip()
+
+        if not token or not new_username:
+            return Response(
+                {"error": "Both 'token' and 'username' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            entry = UsernameResetToken.objects.select_related("user").get(token=token)
+        except UsernameResetToken.DoesNotExist:
+            return Response(
+                {"error": "Invalid or expired link."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # One-time + simple expiry window (e.g. 24h)
+        if entry.used or entry.created_at < timezone.now() - timedelta(days=1):
+            return Response(
+                {"error": "This link has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not re.match(USERNAME_REGEX, new_username):
+            return Response(
+                {"error": "Invalid username format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Don't let them steal someone else's username here.
+        if User.objects.filter(username__iexact=new_username).exclude(pk=entry.user.pk).exists():
+            return Response(
+                {"error": "This username is already taken."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = entry.user
+        user.username = new_username
+        user.save(update_fields=["username"])
+
+        entry.used = True
+        entry.save(update_fields=["used"])
+
+        prof = getattr(user, "profile", None)
+        data = {"username": user.username}
+        if prof:
+            data["profile"] = ProfileSerializer(prof, context={"request": request}).data
+
+        return Response(data, status=status.HTTP_200_OK)

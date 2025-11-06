@@ -32,6 +32,7 @@ from .views import (
     DeleteProfilePictureView,
     CoverFocalUpdateView,
     UpdateUsernameView,
+    UsernameResetByTokenView,
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -78,5 +79,6 @@ urlpatterns = [
     path('guest/campaign/purchase/', GuestCampaignPurchaseView.as_view(), name='guest-campaign-purchase'),
     path('profile/cover-focal/', CoverFocalUpdateView.as_view(), name='guest-campaign-purchase'),
     path("profile/update-username/", UpdateUsernameView.as_view(), name="profile-update-username",),
-
+    path("profile/username-reset/", UsernameResetByTokenView.as_view(), name="username_reset"),
+    
 ]

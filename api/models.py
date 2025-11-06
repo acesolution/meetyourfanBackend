@@ -150,3 +150,21 @@ class SocialMediaLink(models.Model):
         ordering = ['-created_at']
         verbose_name = "Social Media Link"
         verbose_name_plural = "Social Media Links"
+        
+        
+class UsernameResetToken(models.Model):
+    """
+    One-time token that lets a user pick a new username after
+    their previous one was reassigned to a verified account.
+    """
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="username_reset_tokens",
+    )
+    token = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"Username reset token for {self.user.username}"

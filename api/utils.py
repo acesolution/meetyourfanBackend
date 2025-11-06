@@ -12,39 +12,27 @@ def generate_user_id_int() -> int:
     return random.getrandbits(256)
 
 
-def generate_unique_username(base: str, exclude_user_id=None) -> str:
+USERNAME_REGEX = "^[a-zA-Z0-9_.-]+$"
+
+
+def generate_unique_username_for_user(base: str, skip_user_id: int | None = None) -> str:
     """
-    Generate a unique username from the base string.
-
-    - Slugifies + cleans the base.
-    - Enforces max length of the username field.
-    - Appends _1, _2, ... until we find a free username.
-    - exclude_user_id: user ID to ignore in collision checks (the "old owner").
+    Generate a username from `base` that is unique across all users.
+    We optionally skip a specific user id (not needed for the displaced user).
     """
-    User = get_user_model()
-    max_len = User._meta.get_field("username").max_length
+    base = base.strip().lower()
+    # clean: only keep allowed chars
+    base = re.sub(r"[^a-zA-Z0-9_.-]", "", base) or "user"
 
-    # slugify, then remove dashes to get a compact handle
-    slug = slugify(base)          # "John Doe" -> "john-doe"
-    slug = slug.replace("-", "")  # "john-doe" -> "johndoe"
-
-    if not slug:
-        slug = "user"
-
-    slug = slug.lower()
-    slug = slug[:max_len]         # enforce max length
+    candidate = base
+    suffix = 1
 
     qs = User.objects.all()
-    if exclude_user_id is not None:
-        qs = qs.exclude(pk=exclude_user_id)
+    if skip_user_id is not None:
+        qs = qs.exclude(pk=skip_user_id)
 
-    candidate = slug
-    i = 1
     while qs.filter(username__iexact=candidate).exists():
-        suffix = str(i)
-        # leave room for "_" + suffix
-        base_part = slug[: max_len - len(suffix) - 1]
-        candidate = f"{base_part}_{suffix}"
-        i += 1
+        suffix += 1
+        candidate = f"{base}{suffix}"
 
     return candidate
