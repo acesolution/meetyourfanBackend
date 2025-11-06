@@ -3,6 +3,9 @@
 import random
 from django.utils.text import slugify
 from django.contrib.auth import get_user_model
+import re
+
+User = get_user_model()
 
 def generate_user_id_int() -> int:
     """
