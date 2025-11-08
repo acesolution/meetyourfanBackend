@@ -113,21 +113,20 @@ def is_ios(request) -> bool:
 
 def ig_login_start(request):
     """
-    Step 1: send user to Instagram's OAuth authorize screen.
+    Step 1: send user to Instagram Business Login authorize screen.
 
-    On desktop/Android → we do a normal HTTP 302 redirect.
-    On iOS → we render a small HTML page that does
-              `window.location.replace(...)` in JS to *reduce* the chance
-              that iOS opens the Instagram app and breaks the flow.
+    - Uses the same format as the "Embed URL" in the Meta dashboard.
+    - Stores `state` + `flow` in the Django session.
+    - On iOS returns a small HTML page with a JS redirect + button.
     """
     state = secrets.token_urlsafe(24)
     request.session["ig_oauth_state"] = state
 
-    # remember where this was started from ("onboarding" vs "settings")
     flow = request.GET.get("flow") or "settings"
     request.session["ig_flow"] = flow
 
     params = {
+        "force_reauth": "true",                # matches dashboard embed URL
         "client_id": IG_APP_ID,
         "redirect_uri": IG_REDIRECT_URI,
         "scope": "instagram_business_basic",
@@ -135,17 +134,15 @@ def ig_login_start(request):
         "state": state,
     }
 
-    auth_url = "https://api.instagram.com/oauth/authorize?" + urlencode(params)
+    # IMPORTANT: use www.instagram.com for Business Login
+    auth_url = "https://www.instagram.com/oauth/authorize?" + urlencode(params)
     logger.info("IG auth URL: %s", auth_url)
 
     if is_ios(request):
-        # iOS → return a tiny HTML page which does a JS redirect
         logger.info("Detected iOS; using JS-based redirect page for IG OAuth")
         return render(request, "ig_oauth_redirect.html", {"auth_url": auth_url})
 
-    # Everyone else → standard 302 redirect
     return HttpResponseRedirect(auth_url)
-
 
 
 # sociallogins/views.py
