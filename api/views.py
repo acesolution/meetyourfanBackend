@@ -1132,7 +1132,7 @@ def send_username_reassigned_email(user, old_username: str, new_username: str, r
     Email the user that their username was reassigned, and give them
     a one-time link to pick a new username.
     """
-    reset_url = f"{settings.FRONTEND_ORIGIN}/authentication/username-reset?token={reset_token}"
+    reset_url = f"{settings.FRONTEND_ORIGIN}/username/reset?token={reset_token}"
 
     subject = "Your MeetYourFan username has been updated"
 
@@ -1332,6 +1332,31 @@ class UsernameResetByTokenView(APIView):
       - mark token as used
     """
     permission_classes = [AllowAny]
+    
+    def get(self, request):
+        token = (request.query_params.get("token") or "").strip()
+        if not token:
+            return Response(
+                {"valid": False, "error": "Token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            entry = UsernameResetToken.objects.get(token=token)
+        except UsernameResetToken.DoesNotExist:
+            return Response(
+                {"valid": False, "error": "Invalid or expired link."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Already used or older than 1 day
+        if entry.used or entry.created_at < timezone.now() - timedelta(days=1):
+            return Response(
+                {"valid": False, "error": "This link has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({"valid": True}, status=status.HTTP_200_OK)
 
     def post(self, request):
         token = (request.data.get("token") or "").strip()

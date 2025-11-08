@@ -96,36 +96,56 @@ def get_token(user_id: int) -> dict | None:
         "access_token": profile.ig_access_token,
         "expires_in": remaining,
     }
+    
+    
+def is_ios(request) -> bool:
+    """
+    Best-effort detection of iOS Safari / iOS browsers via User-Agent.
+    We use this to decide whether to use a JS-based redirect instead of a
+    plain HTTP 302, which tends to trigger the Instagram app on iOS.
+    """
+    ua = (request.META.get("HTTP_USER_AGENT") or "").lower()
+    return "iphone" in ua or "ipad" in ua or "ipod" in ua
+
 
 
 # ---- OAUTH VIEWS ------------------------------------------------------------
 
 def ig_login_start(request):
     """
-    Step 1: send user to Instagram's OAuth authorize screen (new Instagram Login).
+    Step 1: send user to Instagram's OAuth authorize screen.
+
+    On desktop/Android → we do a normal HTTP 302 redirect.
+    On iOS → we render a small HTML page that does
+              `window.location.replace(...)` in JS to *reduce* the chance
+              that iOS opens the Instagram app and breaks the flow.
     """
     state = secrets.token_urlsafe(24)
     request.session["ig_oauth_state"] = state
-    
+
     # remember where this was started from ("onboarding" vs "settings")
     flow = request.GET.get("flow") or "settings"
-    request.session["ig_flow"] = flow               # keep it short-lived in session
+    request.session["ig_flow"] = flow
 
     params = {
-        # still called client_id in the URL, but value must be your **Instagram app ID**
         "client_id": IG_APP_ID,
         "redirect_uri": IG_REDIRECT_URI,
-        # NEW scopes for Instagram API with Instagram Login (Business)
-        # you probably only need instagram_business_basic for verification
         "scope": "instagram_business_basic",
         "response_type": "code",
         "state": state,
     }
 
     auth_url = "https://api.instagram.com/oauth/authorize?" + urlencode(params)
-    logger.info("Redirecting to IG auth URL: %s", auth_url)
+    logger.info("IG auth URL: %s", auth_url)
 
+    if is_ios(request):
+        # iOS → return a tiny HTML page which does a JS redirect
+        logger.info("Detected iOS; using JS-based redirect page for IG OAuth")
+        return render(request, "ig_oauth_redirect.html", {"auth_url": auth_url})
+
+    # Everyone else → standard 302 redirect
     return HttpResponseRedirect(auth_url)
+
 
 
 # sociallogins/views.py
