@@ -22,6 +22,13 @@ class SocialProfile(models.Model):
         Simple helper: tells you if we currently have an IG token on file.
         """
         return bool(self.ig_access_token)
+    
+    @property
+    def is_instagram_verified(self) -> bool:
+        """
+        You consider someone verified if they have a valid IG connection.
+        """
+        return bool(self.ig_username and self.has_ig_token())
 
     def __str__(self):
         return f"{self.user} / @{self.ig_username or '—'}"

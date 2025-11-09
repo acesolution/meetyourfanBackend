@@ -4,6 +4,8 @@ from rest_framework import serializers
 from profileapp.models import Follower, BlockedUsers, FollowRequest, UserReport
 from django.contrib.auth import get_user_model
 from api.models import Profile, ReportGenericIssue  # Adjust the import if your Profile model is located elsewhere
+from sociallogins.models import SocialProfile
+
 
 User = get_user_model()
 
@@ -27,6 +29,27 @@ class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         fields = ('id', 'name', 'profile_picture')
+        
+    def get_instagram_verified(self, obj):
+        """
+        Consider the user 'Instagram verified' if:
+        - they are an influencer
+        - and they have a SocialProfile with a stored IG username + token
+        """
+        user = getattr(obj, "user", None)
+        if not user:
+            return False
+
+        # Only influencers get the badge
+        if getattr(user, "user_type", None) != "influencer":
+            return False
+
+        try:
+            social = user.social_profile
+        except SocialProfile.DoesNotExist:
+            return False
+
+        return bool(social.ig_username and social.ig_access_token)
 
 # Serializer for a User that includes their profile information
 class UserWithProfileSerializer(serializers.ModelSerializer):
