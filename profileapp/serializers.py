@@ -26,6 +26,8 @@ class FollowRequestSerializer(serializers.ModelSerializer):
         
 # Serializer for Profile data
 class ProfileSerializer(serializers.ModelSerializer):
+    instagram_verified = serializers.SerializerMethodField()
+    
     class Meta:
         model = Profile
         fields = ('id', 'name', 'profile_picture')
