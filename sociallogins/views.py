@@ -11,9 +11,11 @@ from django.utils import timezone                # built-in: timezone-aware "now
 from django.conf import settings                 # built-in: access Django settings
 from .models import SocialProfile
 import logging
-from django.contrib.auth import login
 from django.shortcuts import redirect, render
-
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from api.models import Profile as UserProfile
+User = get_user_model()
 
 logger = logging.getLogger("sociallogins")       # use the named logger we wired in settings
 
@@ -110,7 +112,8 @@ def is_ios(request) -> bool:
 
 
 # ---- OAUTH VIEWS ------------------------------------------------------------
-
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def ig_login_start(request):
     """
     Step 1: send user to Instagram Business Login authorize screen.
@@ -119,8 +122,13 @@ def ig_login_start(request):
     - Stores `state` + `flow` in the Django session.
     - On iOS returns a small HTML page with a JS redirect + button.
     """
+    
+    user = request.user
+    
     state = secrets.token_urlsafe(24)
     request.session["ig_oauth_state"] = state
+    
+    request.session["ig_link_user_id"] = user.id
 
     flow = request.GET.get("flow") or "settings"
     request.session["ig_flow"] = flow
@@ -160,8 +168,8 @@ def ig_login_callback(request):
     """
     code  = request.GET.get("code")          # built-in: QueryDict.get() extracts ?code=...
     state = request.GET.get("state")
-    logger.info("IG callback hit code=%s state=%s", code, state)
-
+    user_id = request.session.pop("ig_link_user_id", None)
+    
     # --- CSRF protection using state --------------------------------------
     expected = request.session.get("ig_oauth_state")  # built-in: session behaves like a dict
     if not code or not state or state != expected:
@@ -228,26 +236,37 @@ def ig_login_callback(request):
     }
     request.session.modified = True          # built-in: mark session as changed → Django saves it
 
-    logger.info(
-        "IG login completed for ig_id=%s username=%s account_type=%s",
-        graph_user_id, username, account_type,
-    )
-
     # --- 2c) tie IG data to the logged-in MYF user (if available) ---------
-    if request.user.is_authenticated:        # built-in: True if Django auth considers them logged in
-        profile, _ = SocialProfile.objects.get_or_create(
-            user=request.user               # OneToOne relation to your CustomUser
-        )
-        profile.ig_user_id      = graph_user_id
-        profile.ig_username     = username
-        profile.ig_access_token = access_token
-        if expires_in:
-            # timezone.now(): built-in → current aware datetime in your TIME_ZONE
-            # timedelta(seconds=...): built-in duration object
-            profile.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
-        profile.save()
-        logger.info("Updated SocialProfile for user_id=%s ig_username=%s",
-                    request.user.id, username)
+    if user_id is not None:
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            user = None
+
+        if user is not None:
+            profile, _ = SocialProfile.objects.get_or_create(user=user)
+            profile.ig_user_id      = graph_user_id
+            profile.ig_username     = username
+            profile.ig_access_token = access_token
+            if expires_in:
+                profile.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
+            profile.save()
+
+            # optional: mirror flag on api.Profile for the green tick
+            try:
+                user_profile = user.profile
+            except UserProfile.DoesNotExist:
+                user_profile = None
+
+            if user_profile and user.user_type == "influencer":
+                user_profile.instagram_verified = True
+                user_profile.save()
+
+            logger.info(
+                "Updated SocialProfile for user_id=%s ig_username=%s",
+                user.id,
+                username,
+            )
 
     # --- 2d) redirect to FE "Confirm username" screen ---------------------
     flow = request.session.pop("ig_flow", "settings")  # built-in: pop removes key if present
