@@ -30,7 +30,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Profile
-        fields = ('id', 'name', 'profile_picture')
+        fields = ('id', 'name', 'profile_picture', 'instagram_verified')
         
     def get_instagram_verified(self, obj):
         """

@@ -53,8 +53,12 @@ class Profile(models.Model):
     cover_focal_x = models.FloatField(default=50)  # 0..100
     cover_focal_y = models.FloatField(default=50)  # 0..100
     
+    instagram_verified = models.BooleanField(default=False)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    
 
     def __str__(self):
         return f"{self.user.username}'s Profile"
