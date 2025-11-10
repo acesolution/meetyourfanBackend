@@ -15,6 +15,8 @@ from django.shortcuts import redirect, render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from api.models import Profile as UserProfile
+from rest_framework.response import Response
+
 User = get_user_model()
 
 logger = logging.getLogger("sociallogins")       # use the named logger we wired in settings
@@ -116,25 +118,22 @@ def is_ios(request) -> bool:
 @permission_classes([IsAuthenticated])
 def ig_login_start(request):
     """
-    Step 1: send user to Instagram Business Login authorize screen.
-
-    - Uses the same format as the "Embed URL" in the Meta dashboard.
-    - Stores `state` + `flow` in the Django session.
-    - On iOS returns a small HTML page with a JS redirect + button.
+    Authenticated start of IG OAuth:
+    - uses JWT (request.user) to know the user
+    - stores user.id + state + flow in the session
+    - returns the Instagram auth_url as JSON
     """
-    
     user = request.user
-    
+
     state = secrets.token_urlsafe(24)
     request.session["ig_oauth_state"] = state
-    
     request.session["ig_link_user_id"] = user.id
 
     flow = request.GET.get("flow") or "settings"
     request.session["ig_flow"] = flow
 
     params = {
-        "force_reauth": "true",                # matches dashboard embed URL
+        "force_reauth": "true",
         "client_id": IG_APP_ID,
         "redirect_uri": IG_REDIRECT_URI,
         "scope": "instagram_business_basic",
@@ -142,16 +141,11 @@ def ig_login_start(request):
         "state": state,
     }
 
-    # IMPORTANT: use www.instagram.com for Business Login
     auth_url = "https://www.instagram.com/oauth/authorize?" + urlencode(params)
     logger.info("IG auth URL: %s", auth_url)
 
-    if is_ios(request):
-        logger.info("Detected iOS; using JS-based redirect page for IG OAuth")
-        return render(request, "ig_oauth_redirect.html", {"auth_url": auth_url})
-
-    return HttpResponseRedirect(auth_url)
-
+    # IMPORTANT: now we just return JSON, no redirect
+    return Response({"auth_url": auth_url})
 
 # sociallogins/views.py
 
