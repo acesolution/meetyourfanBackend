@@ -12,9 +12,7 @@ from sociallogins.models import SocialProfile
 User = get_user_model()
 
 class ProfileSerializer(serializers.ModelSerializer):
-    instagram_verified = serializers.SerializerMethodField()
-    
-    
+        
     class Meta:
         model = Profile
         exclude = ['user']
