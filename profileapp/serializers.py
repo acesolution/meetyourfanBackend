@@ -26,33 +26,12 @@ class FollowRequestSerializer(serializers.ModelSerializer):
         
 # Serializer for Profile data
 class ProfileSerializer(serializers.ModelSerializer):
-    instagram_verified = serializers.SerializerMethodField()
     
     class Meta:
         model = Profile
         fields = ('id', 'name', 'profile_picture', 'instagram_verified')
         
-    def get_instagram_verified(self, obj):
-        """
-        Consider the user 'Instagram verified' if:
-        - they are an influencer
-        - and they have a SocialProfile with a stored IG username + token
-        """
-        user = getattr(obj, "user", None)
-        if not user:
-            return False
-
-        # Only influencers get the badge
-        if getattr(user, "user_type", None) != "influencer":
-            return False
-
-        try:
-            social = user.social_profile
-        except SocialProfile.DoesNotExist:
-            return False
-
-        return bool(social.ig_username and social.ig_access_token)
-
+    
 # Serializer for a User that includes their profile information
 class UserWithProfileSerializer(serializers.ModelSerializer):
     profile = ProfileSerializer(read_only=True)

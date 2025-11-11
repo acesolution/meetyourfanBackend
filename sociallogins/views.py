@@ -150,28 +150,29 @@ def ig_login_start(request):
 # sociallogins/views.py
 
 def ig_login_callback(request):
-    """
-    Step 2: Instagram redirects here with ?code=...&state=...
-    We:
-      - validate state
-      - exchange code -> short-lived token
-      - save token in SESSION
-      - fetch profile (/me) to get username, id, account_type
-      - if request.user is authenticated, persist to SocialProfile
-      - redirect to a FE page that asks: "Use this IG username for MYF?"
-    """
-    code  = request.GET.get("code")          # built-in: QueryDict.get() extracts ?code=...
+    code  = request.GET.get("code")
     state = request.GET.get("state")
-    user_id = request.session.pop("ig_link_user_id", None)
-    
+
+    # We'll read flow for redirects (default to settings view)
+    flow = request.session.get("ig_flow", "settings")
+
     # --- CSRF protection using state --------------------------------------
-    expected = request.session.get("ig_oauth_state")  # built-in: session behaves like a dict
+    expected = request.session.get("ig_oauth_state")
     if not code or not state or state != expected:
         logger.warning("Bad IG OAuth state: expected=%s got=%s", expected, state)
-        return render(request, "login_failed.html", {"error": "Invalid OAuth state"})
+
+        # send the user back to FE with an error flag
+        redirect_url = (
+            f"{settings.FRONTEND_BASE_URL}/instagram-connection-sucess"
+            f"?error=invalid_state&from={flow}"
+        )
+        return HttpResponseRedirect(redirect_url)
 
     # once checked, remove it from session so it can't be reused
     request.session.pop("ig_oauth_state", None)
+
+    # recover the user id we stored in ig_login_start
+    user_id = request.session.pop("ig_link_user_id", None)
 
     # --- 2a) code -> short-lived access token -----------------------------
     token_url = "https://api.instagram.com/oauth/access_token"
@@ -184,23 +185,22 @@ def ig_login_callback(request):
     }
     logger.info("Exchanging code for IG access token: %s", data)
 
-    # requests.post: 3rd-party HTTP client; .json() parses JSON body → dict
-    response = requests.post(token_url, data=data, timeout=20)  # timeout: built-in safety for hanging requests
+    response = requests.post(token_url, data=data, timeout=20)
     token_data = response.json()
     logger.info("Received IG token data: %s", token_data)
 
     if "access_token" not in token_data:
-        return render(
-            request,
-            "login_failed.html",
-            {"error": "Failed to obtain access token", "raw": token_data},
+        # send the error back to FE instead of trying to render a template
+        redirect_url = (
+            f"{settings.FRONTEND_BASE_URL}/instagram-connection-sucess"
+            f"?error=token_exchange_failed&from={flow}"
         )
+        return HttpResponseRedirect(redirect_url)
 
     access_token = token_data["access_token"]
-    ig_user_id   = token_data.get("user_id")        # numeric IG user id if present
-    expires_in   = token_data.get("expires_in")     # seconds until expiry, if provided
+    ig_user_id   = token_data.get("user_id")
+    expires_in   = token_data.get("expires_in")
 
-    # Save token in the SESSION for later verification calls
     save_token_session(request, {
         "access_token": access_token,
         "expires_in": expires_in,
@@ -210,7 +210,7 @@ def ig_login_callback(request):
     me_resp = requests.get(
         "https://graph.instagram.com/me",
         params={
-            "fields": "id,username,account_type",   # IG Graph field selection
+            "fields": "id,username,account_type",
             "access_token": access_token,
         },
         timeout=15,
@@ -222,15 +222,14 @@ def ig_login_callback(request):
     account_type  = me.get("account_type")
     graph_user_id = me.get("id")
 
-    # store profile in session too, so FE can hit another endpoint if needed
     request.session["ig_profile"] = {
         "id": graph_user_id,
         "username": username,
         "account_type": account_type,
     }
-    request.session.modified = True          # built-in: mark session as changed → Django saves it
+    request.session.modified = True
 
-    # --- 2c) tie IG data to the logged-in MYF user (if available) ---------
+    # --- 2c) tie IG data to the stored user id ----------------------------
     if user_id is not None:
         try:
             user = User.objects.get(pk=user_id)
@@ -246,7 +245,7 @@ def ig_login_callback(request):
                 profile.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
             profile.save()
 
-            # optional: mirror flag on api.Profile for the green tick
+            # mirror flag on Profile for the green tick
             try:
                 user_profile = user.profile
             except UserProfile.DoesNotExist:
@@ -262,9 +261,9 @@ def ig_login_callback(request):
                 username,
             )
 
-    # --- 2d) redirect to FE "Confirm username" screen ---------------------
-    flow = request.session.pop("ig_flow", "settings")  # built-in: pop removes key if present
-
+    # --- 2d) success redirect to FE --------------------------------------
+    # remove ig_flow after we’ve used it
+    request.session.pop("ig_flow", None)
     redirect_url = (
         f"{settings.FRONTEND_BASE_URL}/instagram-connection-sucess"
         f"?ig_username={username or ''}"

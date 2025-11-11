@@ -18,27 +18,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         exclude = ['user']
-        
-    def get_instagram_verified(self, obj):
-        """
-        Consider the user 'Instagram verified' if:
-        - they are an influencer
-        - and they have a SocialProfile with a stored IG username + token
-        """
-        user = getattr(obj, "user", None)
-        if not user:
-            return False
 
-        # Only influencers get the badge
-        if getattr(user, "user_type", None) != "influencer":
-            return False
-
-        try:
-            social = user.social_profile
-        except SocialProfile.DoesNotExist:
-            return False
-
-        return bool(social.ig_username and social.ig_access_token)
 
 class ProfileImageSerializer(serializers.ModelSerializer):
     class Meta:
