@@ -159,7 +159,7 @@ def ig_login_callback(request):
     # --- CSRF protection using state --------------------------------------
     expected = request.session.get("ig_oauth_state")
     if not code or not state or state != expected:
-        logger.warning("Bad IG OAuth state: expected=%s got=%s", expected, state)
+        logger.warning("Bad IG OAuth state: expected=%s got=%s", expected, state, flow)
 
         # send the user back to FE with an error flag
         redirect_url = (
