@@ -30,9 +30,6 @@ IG_APP_SECRET   = os.environ["IG_APP_SECRET"]
 IG_REDIRECT_URI = os.environ["IG_REDIRECT_URI"]
 
 # ---- SESSION-BASED STORAGE (NO MYF AUTH) ------------------------------------
-
-SESSION_TOKEN_KEY = "ig_long_lived_token"        # key under which we keep the IG token in session
-
     
 def is_ios(request) -> bool:
     """
@@ -215,3 +212,36 @@ def ig_login_callback(request):
         f"&from={flow}"
     )
     return HttpResponseRedirect(redirect_url)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ig_status(request):
+    """
+    Returns current user's Instagram connection status based on SocialProfile.
+    """
+    user = request.user
+    try:
+        sp = user.social_profile  # OneToOne: user.social_profile
+    except SocialProfile.DoesNotExist:
+        return Response(
+            {
+                "connected": False,
+                "username": None,
+                "url": None,
+                "verified": False,
+            }
+        )
+
+    username = sp.ig_username
+    connected = sp.is_instagram_verified  # uses username + token under the hood
+    url = f"https://www.instagram.com/{username}/" if username else None
+
+    return Response(
+        {
+            "connected": bool(connected),
+            "username": username,
+            "url": url,
+            "verified": bool(sp.is_instagram_verified),
+        }
+    )
