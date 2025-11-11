@@ -60,7 +60,17 @@ SIMPLE_JWT = {
 }
 
 # Allow all domains during development
-CORS_ALLOW_ALL_ORIGINS = True
+#CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://meetyourfan.io",
+    "https://app.meetyourfan.io",
+    # whatever your real FE domains are
+]
+
 
 # Application definition
 INSTALLED_APPS = [
@@ -372,3 +382,5 @@ MEDIA_TOKEN_SALT = "media-access"
 MEDIA_TOKEN_TTL  = 300
 
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://meetyourfan.io")
+
+
