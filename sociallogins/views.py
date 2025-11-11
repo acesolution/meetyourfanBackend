@@ -13,7 +13,7 @@ from .models import SocialProfile
 import logging
 from django.shortcuts import redirect, render
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from api.models import Profile as UserProfile
 from rest_framework.response import Response
 from django.core import signing
@@ -215,14 +215,63 @@ def ig_login_callback(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def ig_status(request):
     """
-    Returns current user's Instagram connection status based on SocialProfile.
+    Public endpoint: return Instagram connection status for a user.
+
+    Priority:
+      1) ?user_id=123
+      2) ?username=foo
+      3) else, if authenticated, use request.user
+      4) else: anonymous with no identifier → no connection
     """
-    user = request.user
+    user = None
+    user_id = request.GET.get("user_id")
+    username = request.GET.get("username")
+
+    if user_id:
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {
+                    "connected": False,
+                    "username": None,
+                    "url": None,
+                    "verified": False,
+                },
+                status=404,
+            )
+    elif username:
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response(
+                {
+                    "connected": False,
+                    "username": None,
+                    "url": None,
+                    "verified": False,
+                },
+                status=404,
+            )
+    elif request.user.is_authenticated:
+        user = request.user
+
+    # anonymous call with no user identifier
+    if user is None:
+        return Response(
+            {
+                "connected": False,
+                "username": None,
+                "url": None,
+                "verified": False,
+            }
+        )
+
     try:
-        sp = user.social_profile  # OneToOne: user.social_profile
+        sp = user.social_profile  # OneToOne
     except SocialProfile.DoesNotExist:
         return Response(
             {
@@ -234,12 +283,11 @@ def ig_status(request):
         )
 
     username = sp.ig_username
-    connected = sp.is_instagram_verified  # uses username + token under the hood
     url = f"https://www.instagram.com/{username}/" if username else None
 
     return Response(
         {
-            "connected": bool(connected),
+            "connected": bool(sp.is_instagram_verified),
             "username": username,
             "url": url,
             "verified": bool(sp.is_instagram_verified),
