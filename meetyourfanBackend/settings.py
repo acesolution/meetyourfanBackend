@@ -66,6 +66,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://192.168.100.5:3000",
     "https://meetyourfan.io",
     "https://app.meetyourfan.io",
     # whatever your real FE domains are
