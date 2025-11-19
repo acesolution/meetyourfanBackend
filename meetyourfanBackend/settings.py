@@ -122,6 +122,7 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = [
     "https://meetyourfan.io",
     "http://localhost:3000",
+    "http://192.168.1.2:3000",
 ]
 
 ROOT_URLCONF = 'meetyourfanBackend.urls'
