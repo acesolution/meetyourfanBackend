@@ -1457,13 +1457,13 @@ class WalletConfirmDepositView(APIView):
 
         # Ensure "0x" prefix
         if not tx_hash.startswith("0x"):
-            # built-in string concatenation: add "0x" in front if missing
+            # built-in string concatenation: adds "0x" prefix if it's missing
             tx_hash = "0x" + tx_hash
 
         # 1️⃣ Fetch original transaction from node
         try:
             tx = w3.eth.get_transaction(tx_hash)
-            # web3.eth.get_transaction: RPC call → returns a Python dict
+            # web3.eth.get_transaction: JSON-RPC call, returns a Python dict with tx fields
         except Exception as e:
             logger.exception("wallet-confirm: get_transaction failed")
             return Response(
@@ -1490,17 +1490,23 @@ class WalletConfirmDepositView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 🔧 Adjust this set to match your Solidity wallet-deposit fn name(s)
-        allowed_fns = {"walletDeposit", "depositFromWallet"}
+        # 🔧 Accept your current wallet entrypoint: deposit(userId, amount)
+        #    We keep the other names in case you introduce a dedicated wallet fn later.
+        allowed_fns = {"walletDeposit", "depositFromWallet", "deposit"}  # built-in set(): unique names
         if fn_name not in allowed_fns:
             return Response(
-                {"error": f"Unexpected function '{fn_name}' for wallet deposit"},
+                {
+                    "error": (
+                        f"Unexpected function '{fn_name}' for wallet deposit; "
+                        f"expected one of {', '.join(sorted(allowed_fns))}"
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         # 4️⃣ Make sure calldata userId matches logged-in MYF user
         try:
-            myf_user_id = int(user.user_id)  # built-in int(): parse string/Decimal → int
+            myf_user_id = int(user.user_id)  # built-in int(): parses string → integer
         except Exception:
             return Response(
                 {"error": "User has no valid on-chain user_id"},
@@ -1508,7 +1514,7 @@ class WalletConfirmDepositView(APIView):
             )
 
         arg_user_id = None
-        # built-in for-loop: loop over a small tuple of possible arg names
+        # built-in for-loop: iterate over possible arg names reported by web3 decode
         for key in ("userId", "user_id", "uid"):
             if key in args:                # built-in "in": membership test in dict keys
                 arg_user_id = int(args[key])
@@ -1553,7 +1559,7 @@ class WalletConfirmDepositView(APIView):
         onchain_wallet = None
         try:
             onchain_wallet = contract.functions.getUserWallet(myf_user_id).call({"from": OWNER})
-            # ContractFunction.call(): read-only eth_call, no gas, returns Python types
+            # ContractFunction.call(): read-only eth_call, zero gas, returns Python types
         except Exception:
             # If getUserWallet reverts or isn't set yet, we just skip this check
             onchain_wallet = None
@@ -1565,12 +1571,11 @@ class WalletConfirmDepositView(APIView):
             )
 
         # 7️⃣ Convert TT wei → TT units + credits, using your existing helpers
-
         tt_amount_wei = int(arg_amount_wei)
-        conv_rate = int(get_current_rate_wei())   # creditsWei per 1 TTWei (as per your contract)
-        credits_wei = tt_amount_wei * conv_rate   # built-in *: integer multiplication, arbitrary precision
+        conv_rate = int(get_current_rate_wei())   # built-in int(): ensures it's a plain integer
+        credits_wei = tt_amount_wei * conv_rate   # built-in *: arbitrary-precision integer multiplication
 
-        # _from_wei: your helper from tasks.py → Decimal with fixed places (2)
+        # _from_wei: your helper → Decimal with fixed decimal places
         tt_amount_dec = _from_wei(tt_amount_wei, token_decimals=18, places=2)
         credits_dec   = _from_wei(credits_wei,  token_decimals=18, places=2)
 
