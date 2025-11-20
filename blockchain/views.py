@@ -48,7 +48,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import transaction
-from blockchain.tasks import claim_guest_after_registration, _from_wei
+from blockchain.tasks import claim_guest_after_registration, _from_wei, sync_user_wallet_on_chain
 
 logger = logging.getLogger(__name__)
 
@@ -1471,34 +1471,25 @@ class WalletConfirmDepositView(APIView):
       "tx_hash": "0x...",
       "amount":  "1230000000000000000"  # optional sanity check, in wei
     }
-
-    This is for *user wallet* (MetaMask/WalletConnect) deposits:
-      - user signs a tx that calls your wallet-deposit function
-      - frontend sends tx_hash here
-      - backend verifies it and enqueues save_transaction_info
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         user = request.user
         tx_hash = request.data.get("tx_hash")
-        raw_amount = request.data.get("amount")  # optional FE echo back; used for sanity only
+        raw_amount = request.data.get("amount")  # optional FE echo back; sanity only
 
         if not tx_hash:
-            return Response(
-                {"error": "tx_hash is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"error": "tx_hash is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ensure "0x" prefix
         if not tx_hash.startswith("0x"):
-            # built-in string concatenation: adds "0x" prefix if it's missing
+            # built-in string concatenation: prepend "0x" if missing
             tx_hash = "0x" + tx_hash
 
         # 1️⃣ Fetch original transaction from node
         try:
             tx = w3.eth.get_transaction(tx_hash)
-            # web3.eth.get_transaction: JSON-RPC call, returns a Python dict with tx fields
+            # w3.eth.get_transaction: web3 call → returns Python dict with tx fields
         except Exception as e:
             logger.exception("wallet-confirm: get_transaction failed")
             return Response(
@@ -1506,18 +1497,29 @@ class WalletConfirmDepositView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 2️⃣ Check that tx was sent to *our* contract
-        to_addr = (tx["to"] or "").lower()   # built-in dict access + str.lower()
+        # 2️⃣ Extract sender (wallet that actually paid)
+        tx_from_raw = tx.get("from")  # dict.get(): built-in — read key or return None
+        if not tx_from_raw:
+            return Response({"error": "Transaction has no 'from' field"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from_addr = Web3.to_checksum_address(tx_from_raw)
+            # Web3.to_checksum_address: web3 helper – normalizes and EIP-55 checks an address
+        except Exception:
+            from_addr = tx_from_raw  # fall back to whatever we got
+
+        # 3️⃣ Check that tx was sent to *our* contract
+        to_addr = (tx["to"] or "").lower()   # dict access + str.lower(): built-in
         if not to_addr or to_addr != SC_ADDRESS.lower():
             return Response(
                 {"error": "Transaction was not sent to the MYF contract"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 3️⃣ Decode called function + args
+        # 4️⃣ Decode called function + args
         try:
             fn_name, args = decode_tx_input(tx["input"])
-            # tx["input"] is the raw calldata hex string
+            # tx["input"]: raw calldata hex string
         except Exception as e:
             logger.exception("wallet-confirm: decode_input failed")
             return Response(
@@ -1525,9 +1527,7 @@ class WalletConfirmDepositView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 🔧 Accept your current wallet entrypoint: deposit(userId, amount)
-        #    We keep the other names in case you introduce a dedicated wallet fn later.
-        allowed_fns = {"walletDeposit", "depositFromWallet", "deposit"}  # built-in set(): unique names
+        allowed_fns = {"walletDeposit", "depositFromWallet", "deposit"}  # set(): built-in unique collection
         if fn_name not in allowed_fns:
             return Response(
                 {
@@ -1539,9 +1539,9 @@ class WalletConfirmDepositView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 4️⃣ Make sure calldata userId matches logged-in MYF user
+        # 5️⃣ Make sure calldata userId matches logged-in MYF user
         try:
-            myf_user_id = int(user.user_id)  # built-in int(): parses string → integer
+            myf_user_id = int(user.user_id)  # int(): built-in – parse string → int
         except Exception:
             return Response(
                 {"error": "User has no valid on-chain user_id"},
@@ -1549,9 +1549,8 @@ class WalletConfirmDepositView(APIView):
             )
 
         arg_user_id = None
-        # built-in for-loop: iterate over possible arg names reported by web3 decode
-        for key in ("userId", "user_id", "uid"):
-            if key in args:                # built-in "in": membership test in dict keys
+        for key in ("userId", "user_id", "uid"):  # for: built-in loop over possible keys
+            if key in args:                       # "in": built-in membership test on dict keys
                 arg_user_id = int(args[key])
                 break
 
@@ -1561,11 +1560,11 @@ class WalletConfirmDepositView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 5️⃣ Extract amount in wei from calldata
+        # 6️⃣ Extract amount in wei from calldata
         arg_amount_wei = None
         for key in ("amountWei", "amount", "valueWei"):
             if key in args:
-                arg_amount_wei = int(args[key])
+                arg_amount_wei = int(args[key])   # int(): built-in – string/Decimal → int
                 break
 
         if arg_amount_wei is None:
@@ -1589,31 +1588,49 @@ class WalletConfirmDepositView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # 7️⃣ Convert TT wei → TT units + credits, using your existing helpers
-        tt_amount_wei = int(arg_amount_wei)
-        conv_rate = int(get_current_rate_wei())   # built-in int(): ensures it's a plain integer
-        credits_wei = tt_amount_wei * conv_rate   # built-in *: arbitrary-precision integer multiplication
+        # 7️⃣ Update user's saved wallet (DB) + detect mismatch (for FE notice)
+        existing = (user.wallet_address or "").strip()  # or "": built-in ternary-like pattern
+        wallet_mismatch = False
 
-        # _from_wei: your helper → Decimal with fixed decimal places
+        if existing:
+            if existing.lower() != from_addr.lower():
+                # don't block, just mark and log
+                wallet_mismatch = True
+                logger.info(
+                    "wallet-confirm: user %s deposit from different wallet %s (saved=%s)",
+                    user.id, from_addr, existing
+                )
+        else:
+            # first time we see a wallet → save it
+            user.wallet_address = from_addr
+            user.save(update_fields=["wallet_address"])
+            # save(update_fields=...): Django built-in – UPDATE only given fields
+
+            # fire best-effort on-chain sync (non-blocking)
+            try:
+                sync_user_wallet_on_chain.delay(myf_user_id, from_addr)
+            except Exception:
+                logger.exception("wallet-confirm: failed to enqueue sync_user_wallet_on_chain")
+
+        # 8️⃣ Convert TT wei → TT units + credits
+        tt_amount_wei = int(arg_amount_wei)
+        conv_rate = int(get_current_rate_wei())        # int(): guard against Decimal/str
+        credits_wei = tt_amount_wei * conv_rate        # *: built-in arbitrary-precision multiply
+
         tt_amount_dec = _from_wei(tt_amount_wei, token_decimals=18, places=2)
         credits_dec   = _from_wei(credits_wei,  token_decimals=18, places=2)
-        
-        tx_from_raw = (tx.get("from") or "").lower()
-        # dict.get(): built-in — safe lookup; returns None instead of raising KeyError
-        # lower(): built-in str method — normalizes case so comparisons are consistent
 
-
-        # 8️⃣ Enqueue your existing indexer; it will fetch receipt and persist metadata
+        # 9️⃣ Enqueue indexer; it will fetch receipt and persist metadata + wallet
         save_transaction_info.delay(
             tx_hash,
-            user.id,                  # Django FK, not on-chain id
-            None,                     # campaign_id
-            Transaction.DEPOSIT,      # tx_type
-            str(tt_amount_dec),       # parsed TT amount (2dp)
-            str(credits_dec),         # parsed credits change (2dp)
-            tt_amount_wei=str(tt_amount_wei),     # raw on-chain integer
-            credits_delta_wei=str(credits_wei),   # raw on-chain integer
-            wallet_address=tx_from_raw,   # IMPORTANT: original sender wallet
+            user.id,
+            None,
+            Transaction.DEPOSIT,
+            str(tt_amount_dec),
+            str(credits_dec),
+            tt_amount_wei=str(tt_amount_wei),
+            credits_delta_wei=str(credits_wei),
+            wallet_address=from_addr,  # IMPORTANT: wallet that actually paid
         )
 
         return Response(
@@ -1621,6 +1638,8 @@ class WalletConfirmDepositView(APIView):
                 "message": "Wallet deposit recorded; awaiting on-chain confirmation.",
                 "tt_amount": str(tt_amount_dec),
                 "credits_delta": str(credits_dec),
+                "wallet_used": from_addr,
+                "wallet_mismatch": wallet_mismatch,  # FE can show a small warning
             },
             status=status.HTTP_201_CREATED,
         )

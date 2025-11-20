@@ -19,6 +19,7 @@ class BaseOnChainSerializer(serializers.ModelSerializer):
 
 
 class TransactionSerializer(BaseOnChainSerializer):
+    wallet_mismatch = serializers.SerializerMethodField()
     class Meta:
         model = Transaction
         fields = [
@@ -26,8 +27,15 @@ class TransactionSerializer(BaseOnChainSerializer):
             "status", "block_number", "transaction_index",
             "gas_used", "effective_gas_price",
             "from_address", "to_address", "value", "input_data",
-            "timestamp", "campaign",
+            "timestamp", "campaign", "wallet_address", "wallet_mismatch",
         ]
+        
+    def get_wallet_mismatch(self, obj):
+        user = obj.user
+        saved = (getattr(user, "wallet_address", "") or "").lower()
+        used  = (obj.wallet_address or "").lower()
+        # bool(): built-in – normalize truthiness to True/False
+        return bool(saved and used and saved != used)
 
 
 class InfluencerTransactionSerializer(BaseOnChainSerializer):

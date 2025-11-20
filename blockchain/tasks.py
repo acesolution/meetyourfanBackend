@@ -825,3 +825,35 @@ def claim_guest_after_registration(self, click_id: str, user_id: int) -> str:
         if any(s in msg for s in ["pending", "not found", "no claim", "not funded"]):
             raise self.retry(exc=e)
         raise
+    
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def sync_user_wallet_on_chain(self, user_id: int, wallet_address: str):
+    """
+    Ensure the contract's user→wallet mapping matches our DB.
+    Called on first wallet deposit or when user updates wallet.
+    """
+    try:
+        checksum = Web3.to_checksum_address(wallet_address)
+        # to_checksum_address: web3 helper – normalizes EOA
+    except Exception:
+        checksum = wallet_address
+
+    try:
+        chain_id = w3.eth.chain_id
+        nonce    = w3.eth.get_transaction_count(OWNER)
+        tx_params = {
+            "chainId":  chain_id,
+            "from":     OWNER,
+            "nonce":    nonce,
+            "gas":      GAS_LIMIT,
+            "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
+        }
+        # ⚠️ adapt this to your real ABI name
+        fn = contract.functions.setUserWallet(int(user_id), checksum)
+        tx_hash = _build_and_send(fn, tx_params)
+        return tx_hash
+    except Exception as exc:
+        # self.retry: Celery built-in – re-enqueue the task on failure
+        raise self.retry(exc=exc)
