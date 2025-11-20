@@ -48,10 +48,9 @@ from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import transaction
-from blockchain.tasks import claim_guest_after_registration
+from blockchain.tasks import claim_guest_after_registration, _from_wei
 
 logger = logging.getLogger(__name__)
-
 
 OWNER        = settings.OWNER_ADDRESS
 PK           = settings.PRIVATE_KEY
@@ -88,6 +87,23 @@ def _sum_withdrawn_credits_for_date(user, day, include_pending=True) -> Decimal:
         .aggregate(total=Coalesce(Sum("abs_credits", output_field=DecimalField()), Value(0, output_field=DecimalField())))
     )
     return qs["total"] or Decimal(0)
+
+
+def decode_tx_input(tx_input: str):
+    """
+    Decode a contract call's input data into (function_name, args_dict).
+
+    - contract.decode_function_input(...) is a web3.py helper that uses your ABI
+      to turn the raw hex calldata (the 'input' field from the tx) into:
+        * a ContractFunction object
+        * a Python dict of named arguments
+
+    - built-in getattr(): safely fetches an attribute from an object, returning
+      a default if it's missing instead of raising AttributeError.
+    """
+    fn, args = contract.decode_function_input(tx_input)
+    fn_name = getattr(fn, "fn_name", getattr(fn, "function_identifier", ""))
+    return fn_name, args
 
 
 class DailyWithdrawUsageView(APIView):
@@ -1408,3 +1424,173 @@ class GuestClaimPreviewView(APIView):
             return f"{name_mask}@{dom}"
         except Exception:
             return "***"
+        
+        
+        
+class WalletConfirmDepositView(APIView):
+    """
+    POST /api/blockchain/wallet/confirm-deposit/
+
+    Body (JSON):
+    {
+      "tx_hash": "0x...",
+      "amount":  "1230000000000000000"  # optional sanity check, in wei
+    }
+
+    This is for *user wallet* (MetaMask/WalletConnect) deposits:
+      - user signs a tx that calls your wallet-deposit function
+      - frontend sends tx_hash here
+      - backend verifies it and enqueues save_transaction_info
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        tx_hash = request.data.get("tx_hash")
+        raw_amount = request.data.get("amount")  # optional FE echo back; used for sanity only
+
+        if not tx_hash:
+            return Response(
+                {"error": "tx_hash is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Ensure "0x" prefix
+        if not tx_hash.startswith("0x"):
+            # built-in string concatenation: add "0x" in front if missing
+            tx_hash = "0x" + tx_hash
+
+        # 1️⃣ Fetch original transaction from node
+        try:
+            tx = w3.eth.get_transaction(tx_hash)
+            # web3.eth.get_transaction: RPC call → returns a Python dict
+        except Exception as e:
+            logger.exception("wallet-confirm: get_transaction failed")
+            return Response(
+                {"error": f"Could not fetch transaction: {e}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2️⃣ Check that tx was sent to *our* contract
+        to_addr = (tx["to"] or "").lower()   # built-in dict access + str.lower()
+        if not to_addr or to_addr != SC_ADDRESS.lower():
+            return Response(
+                {"error": "Transaction was not sent to the MYF contract"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3️⃣ Decode called function + args
+        try:
+            fn_name, args = decode_tx_input(tx["input"])
+            # tx["input"] is the raw calldata hex string
+        except Exception as e:
+            logger.exception("wallet-confirm: decode_input failed")
+            return Response(
+                {"error": f"Could not decode transaction input: {e}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 🔧 Adjust this set to match your Solidity wallet-deposit fn name(s)
+        allowed_fns = {"walletDeposit", "depositFromWallet"}
+        if fn_name not in allowed_fns:
+            return Response(
+                {"error": f"Unexpected function '{fn_name}' for wallet deposit"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 4️⃣ Make sure calldata userId matches logged-in MYF user
+        try:
+            myf_user_id = int(user.user_id)  # built-in int(): parse string/Decimal → int
+        except Exception:
+            return Response(
+                {"error": "User has no valid on-chain user_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        arg_user_id = None
+        # built-in for-loop: loop over a small tuple of possible arg names
+        for key in ("userId", "user_id", "uid"):
+            if key in args:                # built-in "in": membership test in dict keys
+                arg_user_id = int(args[key])
+                break
+
+        if arg_user_id is not None and arg_user_id != myf_user_id:
+            return Response(
+                {"error": "Transaction userId does not match authenticated user"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 5️⃣ Extract amount in wei from calldata
+        arg_amount_wei = None
+        for key in ("amountWei", "amount", "valueWei"):
+            if key in args:
+                arg_amount_wei = int(args[key])
+                break
+
+        if arg_amount_wei is None:
+            return Response(
+                {"error": "Could not determine deposit amount from transaction"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Optional sanity: body "amount" must match decoded amount
+        if raw_amount is not None:
+            try:
+                fe_amount = int(raw_amount)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "Invalid amount in request body"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if fe_amount != arg_amount_wei:
+                return Response(
+                    {"error": "Amount in request body does not match tx input"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # 6️⃣ Validate sender wallet ↔ on-chain wallet mapping if present
+        tx_from = (tx["from"] or "").lower()
+        onchain_wallet = None
+        try:
+            onchain_wallet = contract.functions.getUserWallet(myf_user_id).call({"from": OWNER})
+            # ContractFunction.call(): read-only eth_call, no gas, returns Python types
+        except Exception:
+            # If getUserWallet reverts or isn't set yet, we just skip this check
+            onchain_wallet = None
+
+        if onchain_wallet and onchain_wallet.lower() != tx_from:
+            return Response(
+                {"error": "Transaction sender wallet does not match your registered wallet"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 7️⃣ Convert TT wei → TT units + credits, using your existing helpers
+
+        tt_amount_wei = int(arg_amount_wei)
+        conv_rate = int(get_current_rate_wei())   # creditsWei per 1 TTWei (as per your contract)
+        credits_wei = tt_amount_wei * conv_rate   # built-in *: integer multiplication, arbitrary precision
+
+        # _from_wei: your helper from tasks.py → Decimal with fixed places (2)
+        tt_amount_dec = _from_wei(tt_amount_wei, token_decimals=18, places=2)
+        credits_dec   = _from_wei(credits_wei,  token_decimals=18, places=2)
+
+        # 8️⃣ Enqueue your existing indexer; it will fetch receipt and persist metadata
+        save_transaction_info.delay(
+            tx_hash,
+            user.id,                  # Django FK, not on-chain id
+            None,                     # campaign_id
+            Transaction.DEPOSIT,      # tx_type
+            str(tt_amount_dec),       # parsed TT amount (2dp)
+            str(credits_dec),         # parsed credits change (2dp)
+            tt_amount_wei=str(tt_amount_wei),     # raw on-chain integer
+            credits_delta_wei=str(credits_wei),   # raw on-chain integer
+        )
+
+        return Response(
+            {
+                "message": "Wallet deposit recorded; awaiting on-chain confirmation.",
+                "tt_amount": str(tt_amount_dec),
+                "credits_delta": str(credits_dec),
+            },
+            status=status.HTTP_201_CREATED,
+        )

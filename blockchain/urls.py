@@ -23,6 +23,7 @@ from .views import (
     GuestInitDepositView,
     GuestClaimView,
     GuestClaimPreviewView,
+    WalletConfirmDepositView,
 )
 
 app_name = "blockchain"
@@ -49,5 +50,6 @@ urlpatterns = [
     path("guest/init-deposit/", GuestInitDepositView.as_view(), name="guest-init-deposit"),
     path("guest/claim/",        GuestClaimView.as_view(),      name="guest-claim"),
     path("guest/claim/preview/", GuestClaimPreviewView.as_view()),
-
+    # 🔥 NEW: wallet-specific confirmation endpoint (MetaMask / WalletConnect)
+    path('wallet/confirm-deposit/', WalletConfirmDepositView.as_view(), name='wallet-confirm-deposit'),
 ]
