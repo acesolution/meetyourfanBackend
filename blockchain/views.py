@@ -311,23 +311,58 @@ class MyLatestSnapshotView(APIView):
         except BalanceSnapshot.DoesNotExist:
             return Response({"error":"no snapshot yet"}, status=404)
 
+
 class GetUserWalletView(APIView):
     """
-    GET /api/blockchain/wallet/
-    Returns the authenticated user’s registered withdrawal wallet address.
+    GET /api/blockchain/get-wallet/
+    Returns the authenticated user’s *saved* withdrawal wallet.
+
+    - First tries DB (CustomUser.wallet_address).
+    - If empty, falls back to on-chain getUserWallet(user_id).
+    - If on-chain returns a non-empty address, syncs it into DB for future calls.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_id = int(request.user.user_id)
-        try:
-            wallet = contract.functions.getUserWallet(user_id).call({
-                "from": OWNER  # your owner address from settings.OWNER_ADDRESS
-            })
-            return Response({"wallet": wallet})
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        user = request.user
 
+        # 1️⃣ Prefer DB field as the primary source of truth
+        db_wallet = getattr(user, "wallet_address", None)
+        # getattr(obj, name, default): built-in — returns attribute or default instead of raising
+        if db_wallet:
+            return Response({"wallet": db_wallet})
+
+        # 2️⃣ Fall back to on-chain mapping, useful during migration/legacy
+        try:
+            user_id = int(user.user_id)
+            # int(): built-in — parses string/Decimal into Python integer
+        except Exception:
+            return Response({"wallet": ""})
+
+        try:
+            wallet = contract.functions.getUserWallet(user_id).call({"from": OWNER})
+            # .call(): web3 built-in — eth_call (read-only, no gas)
+        except Exception as e:
+            logger.exception("get-wallet on-chain call failed")
+            return Response({"wallet": ""})
+
+        # 3️⃣ Optional: sync on-chain → DB if we got a real address
+        try:
+            normalized = (wallet or "").strip()
+            # strip(): built-in — trims whitespace at both ends of string
+            if normalized and normalized != "0x0000000000000000000000000000000000000000":
+                # Only write if DB is still empty, to avoid overwriting a user-changed wallet
+                if not getattr(user, "wallet_address", None):
+                    user.wallet_address = normalized
+                    user.save(update_fields=["wallet_address"])
+                    # save(update_fields=...): built-in Django method — issues UPDATE only for given fields
+        except Exception:
+            # Never block the response if sync fails; just log and move on
+            logger.exception("Failed to sync on-chain wallet to DB")
+
+        return Response({"wallet": wallet})
+
+    
 class WithdrawView(APIView):
     """
     POST /api/blockchain/withdraw/
@@ -1562,6 +1597,11 @@ class WalletConfirmDepositView(APIView):
         # _from_wei: your helper → Decimal with fixed decimal places
         tt_amount_dec = _from_wei(tt_amount_wei, token_decimals=18, places=2)
         credits_dec   = _from_wei(credits_wei,  token_decimals=18, places=2)
+        
+        tx_from_raw = (tx.get("from") or "").lower()
+        # dict.get(): built-in — safe lookup; returns None instead of raising KeyError
+        # lower(): built-in str method — normalizes case so comparisons are consistent
+
 
         # 8️⃣ Enqueue your existing indexer; it will fetch receipt and persist metadata
         save_transaction_info.delay(
@@ -1573,6 +1613,7 @@ class WalletConfirmDepositView(APIView):
             str(credits_dec),         # parsed credits change (2dp)
             tt_amount_wei=str(tt_amount_wei),     # raw on-chain integer
             credits_delta_wei=str(credits_wei),   # raw on-chain integer
+            wallet_address=tx_from_raw,   # IMPORTANT: original sender wallet
         )
 
         return Response(

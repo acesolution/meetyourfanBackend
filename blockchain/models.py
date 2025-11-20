@@ -136,7 +136,7 @@ class Transaction(OnChainBase):
     # (optional but recommended) exact on-chain integers for audit/recalc
     tt_amount_wei     = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
     credits_delta_wei = models.DecimalField(max_digits=78, decimal_places=0, null=True, blank=True)
-
+    wallet_address = models.CharField(max_length=64, blank=True, null=True)
     class Meta(OnChainBase.Meta):
         ordering = ['-timestamp']
 

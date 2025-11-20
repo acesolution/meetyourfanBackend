@@ -117,6 +117,7 @@ def save_transaction_info(
     phone_verified: bool = False,
     tt_amount_wei: str = None,
     credits_delta_wei: str = None,
+    wallet_address: str = None,
     **kwargs,                            # built-in: collect any future args
 ):
     """
@@ -159,6 +160,7 @@ def save_transaction_info(
         phone_verified=phone_verified,
         tt_amount_wei=tt_wei_dec,
         credits_delta_wei=cr_wei_dec,
+        wallet_address=wallet_address,      # NEW: which wallet paid this tx
     )
 
 @shared_task(bind=True, max_retries=5, default_retry_delay=30)

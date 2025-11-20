@@ -22,7 +22,7 @@ class CustomUser(AbstractUser):
         ('influencer', 'Influencer'),
     ]
     user_type = models.CharField(max_length=20, choices=USER_TYPE_CHOICES, default='fan')  # Add user type
-    
+    wallet_address = models.CharField(max_length=64, blank=True, null=True)  # Ethereum wallet address length
     # Big‐enough to hold a 256‐bit integer
     user_id = models.CharField(
         max_length=256,
