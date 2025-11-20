@@ -1554,22 +1554,6 @@ class WalletConfirmDepositView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # 6️⃣ Validate sender wallet ↔ on-chain wallet mapping if present
-        tx_from = (tx["from"] or "").lower()
-        onchain_wallet = None
-        try:
-            onchain_wallet = contract.functions.getUserWallet(myf_user_id).call({"from": OWNER})
-            # ContractFunction.call(): read-only eth_call, zero gas, returns Python types
-        except Exception:
-            # If getUserWallet reverts or isn't set yet, we just skip this check
-            onchain_wallet = None
-
-        if onchain_wallet and onchain_wallet.lower() != tx_from:
-            return Response(
-                {"error": "Transaction sender wallet does not match your registered wallet"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         # 7️⃣ Convert TT wei → TT units + credits, using your existing helpers
         tt_amount_wei = int(arg_amount_wei)
         conv_rate = int(get_current_rate_wei())   # built-in int(): ensures it's a plain integer
