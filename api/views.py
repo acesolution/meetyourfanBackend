@@ -232,20 +232,23 @@ class ResetPasswordAPIView(APIView):
 USERNAME_REGEX = "^[a-zA-Z0-9_.-]+$"
 
 class CheckUsernameAvailabilityView(APIView):
-    """
-    API to check if a username is available.
-    """
     permission_classes = [AllowAny]
-    def get(self, request):
-        username = request.query_params.get('username', None)
-        if username:
-            if not re.match(USERNAME_REGEX, username):
-                return Response({'available': False, 'message': 'Invalid username format.'}, status=status.HTTP_400_BAD_REQUEST)
-            if User.objects.filter(username__iexact=username).exists():
-                return Response({'available': False, 'message': 'Username is already taken.'}, status=status.HTTP_200_OK)
 
-            return Response({'available': True, 'message': 'Username is available.'}, status=status.HTTP_200_OK)
-        return Response({'error': 'Username parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)     
+    def get(self, request):
+        username = (request.query_params.get('username') or '').strip()
+
+        if not username:
+            return Response({'error': 'Username parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # re.fullmatch: built-in regex function that matches the ENTIRE string (safer than match here)
+        if not re.fullmatch(USERNAME_REGEX, username):
+            return Response({'available': False, 'message': 'Invalid username format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # exists(): Django ORM built-in method that returns True/False without fetching rows (fast)
+        if User.objects.filter(username__iexact=username).exists():
+            return Response({'available': False, 'message': 'Username is already taken.'}, status=status.HTTP_200_OK)
+
+        return Response({'available': True, 'message': 'Username is available.'}, status=status.HTTP_200_OK)
 
 
 class SendVerificationCodeView(APIView):

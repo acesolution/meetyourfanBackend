@@ -1463,6 +1463,7 @@ class GuestClaimPreviewView(APIView):
         
         
 class WalletConfirmDepositView(APIView):
+    
     """
     POST /api/blockchain/wallet/confirm-deposit/
 
@@ -1472,6 +1473,7 @@ class WalletConfirmDepositView(APIView):
       "amount":  "1230000000000000000"  # optional sanity check, in wei
     }
     """
+    
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
