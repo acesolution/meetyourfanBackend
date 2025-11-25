@@ -60,8 +60,9 @@ class CurrentUserView(APIView):
         return Response(serializer.data)
 
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
@@ -138,8 +139,9 @@ class ProfileView(APIView):
         return Response(serializer.errors, status=400)
     
 class LoginView(APIView):
-    permission_classes = [AllowAny]
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def post(self, request):
         identifier = request.data.get('identifier')
         password = request.data.get('password')
@@ -172,8 +174,9 @@ class LoginView(APIView):
     
     
 class ResetPasswordAPIView(APIView):
-    permission_classes = []  # AllowAny so that users who forgot their password can access this
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def post(self, request):
         email = request.data.get("email")
         if not email:
@@ -566,7 +569,8 @@ class DeleteCoverPhotoView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 class InfluencersView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny] 
+    authentication_classes = []
     
     def get(self, request):
         # Start with the base query for influencers.
@@ -583,8 +587,9 @@ class InfluencersView(APIView):
         return Response({'influencers': serializer.data}, status=status.HTTP_200_OK)
 
 class FansView(APIView):
-    permission_classes = [AllowAny]
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def get(self, request):
         # Start with the base query for fans.
         queryset = User.objects.filter(user_type='fan')
@@ -600,7 +605,8 @@ class FansView(APIView):
         return Response({'fans': serializer.data}, status=status.HTTP_200_OK)
 
 class InfluencerDetailView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny] 
+    authentication_classes = []
     
     def get(self, request, influencer_id):
         try:
@@ -612,7 +618,8 @@ class InfluencerDetailView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
     
 class FanDetailView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny] 
+    authentication_classes = []
     
     def get(self, request, fan_id):
         try:
@@ -760,8 +767,9 @@ class TestResetPasswordView(View):
             return render(request, 'reset_password_invalid.html')
 
 class SubscribeEmailAPIView(APIView):
-    permission_classes = [AllowAny]  # No authentication required
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def post(self, request):
         email_value = request.data.get("email")
         if not email_value:
@@ -1034,8 +1042,9 @@ class UpdateEmailView(APIView):
             
             
 class GuestCampaignPurchaseView(APIView):
-    permission_classes = []  # AllowAny
-
+    permission_classes = [AllowAny] 
+    authentication_classes = []
+    
     def post(self, request):
        
         # 2) Validate registration fields
@@ -1335,7 +1344,8 @@ class UsernameResetByTokenView(APIView):
       - update user's username
       - mark token as used
     """
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny] 
+    authentication_classes = []
     
     def get(self, request):
         token = (request.query_params.get("token") or "").strip()
