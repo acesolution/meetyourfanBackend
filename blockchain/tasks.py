@@ -707,6 +707,11 @@ def notify_guest_claim_ready(self, click_id: str):
             )
             msg.attach_alternative(html, "text/html")
             msg.send(fail_silently=False)
+            
+            # ✅ IMPORTANT: persist "sent"
+            go.claim_email_sent_at = timezone.now()  # timezone.now(): Django helper, returns aware datetime
+            go.save(update_fields=["claim_email_sent_at"])  # save(update_fields): Django ORM partial update
+
 
         return "sent"
 
