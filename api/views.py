@@ -235,7 +235,7 @@ class ResetPasswordAPIView(APIView):
 USERNAME_REGEX = "^[a-zA-Z0-9_.-]+$"
 
 class CheckUsernameAvailabilityView(APIView):
-    permission_classes = [AllowAny] 
+    permission_classes = [] 
     authentication_classes = []
 
     def get(self, request):
