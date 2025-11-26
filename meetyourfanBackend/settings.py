@@ -66,9 +66,8 @@ CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://192.168.1.2:3000",
     "https://meetyourfan.io",
-    "https://app.meetyourfan.io",
+    "https://www.meetyourfan.io",
     # whatever your real FE domains are
 ]
 
@@ -122,7 +121,7 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = [
     "https://meetyourfan.io",
     "http://localhost:3000",
-    "http://192.168.1.2:3000",
+    "https://www.meetyourfan.io",
 ]
 
 ROOT_URLCONF = 'meetyourfanBackend.urls'
