@@ -33,6 +33,7 @@ from .views import (
     CoverFocalUpdateView,
     UpdateUsernameView,
     UsernameResetByTokenView,
+    ResetPasswordConfirmAPIView,
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -81,4 +82,6 @@ urlpatterns = [
     path("profile/update-username/", UpdateUsernameView.as_view(), name="profile-update-username",),
     path("profile/username-reset/", UsernameResetByTokenView.as_view(), name="username_reset"),
     
+    path("auth/reset-password-confirm/", ResetPasswordConfirmAPIView.as_view()),
+
 ]

@@ -48,6 +48,9 @@ from django.core.exceptions import ValidationError
 import logging
 from api.utils import generate_unique_username_for_user
 import secrets
+from django.contrib.auth.password_validation import validate_password
+from django.utils.encoding import force_str
+
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -172,7 +175,6 @@ class LoginView(APIView):
     
     
     
-    
 class ResetPasswordAPIView(APIView):
     permission_classes = [AllowAny] 
     authentication_classes = []
@@ -198,7 +200,8 @@ class ResetPasswordAPIView(APIView):
         
         # Construct a reset password link.
         # Change "https://yourfrontenddomain.com" to your actual front-end domain.
-        reset_link = f"https://meetyourfan.io/api/test/reset-password/{uid}/{token}/"
+        FRONTEND_URL = "https://meetyourfan.io"  # better: put in settings via env
+        reset_link = f"{FRONTEND_URL}/reset-password/{uid}/{token}"
 
         # Plain-text fallback message (in case HTML is not supported by the email client).
         plain_message = (
@@ -230,6 +233,47 @@ class ResetPasswordAPIView(APIView):
             return Response({"error": f"Failed to send reset email. Error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"message": "Password reset link sent to your email."}, status=status.HTTP_200_OK)
+
+class ResetPasswordConfirmAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        uidb64 = request.data.get("uid")
+        token = request.data.get("token")
+        new_password = request.data.get("new_password")
+
+        if not uidb64 or not token or not new_password:
+            return Response(
+                {"detail": "uid, token, and new_password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # urlsafe_base64_decode: built-in django helper -> bytes
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            # force_str: built-in django helper -> converts bytes to string
+            user = User.objects.get(pk=uid)
+        except Exception:
+            return Response({"detail": "Invalid reset link."}, status=status.HTTP_400_BAD_REQUEST)
+
+        token_generator = PasswordResetTokenGenerator()
+
+        # check_token(): built-in -> validates token integrity + expiry rules
+        if not token_generator.check_token(user, token):
+            return Response({"detail": "Reset link is invalid or expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # validate_password(): Django built-in -> runs AUTH_PASSWORD_VALIDATORS
+            validate_password(new_password, user=user)
+        except ValidationError as e:
+            return Response({"new_password": list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # set_password(): Django built-in -> hashes password properly
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
 
 
 USERNAME_REGEX = "^[a-zA-Z0-9_.-]+$"
