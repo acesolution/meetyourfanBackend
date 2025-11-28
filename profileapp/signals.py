@@ -1,6 +1,7 @@
 # profileapp/signals.py
 
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, post_delete
+from django.contrib.contenttypes.models import ContentType
 from django.dispatch import receiver
 from django.conf import settings
 from api.models import Profile  # Import the Profile model from the same app
@@ -103,7 +104,41 @@ def notify_follow_request_accepted(sender, instance, created, **kwargs):
             verb="accepted your follow request",
             target=instance
         )
-        
+   
+   
+@receiver(post_delete, sender=FollowRequest)
+def remove_follow_request_notification_on_delete(sender, instance, **kwargs):
+    """
+    When a FollowRequest is deleted (cancel/decline/accept),
+    delete the notification that was created for it.
+    """
+
+    # ContentType.objects.get_for_model(): Django built-in that returns the ContentType row for a model
+    ct = ContentType.objects.get_for_model(FollowRequest)
+
+    qs = Notification.objects.filter(
+        recipient=instance.receiver,
+        actor=instance.sender,
+        verb="sent you a follow request",
+        target_content_type=ct,
+        target_object_id=instance.id,
+    )
+
+    # values_list(..., flat=True): Django QuerySet built-in to pull a single column list
+    notif_ids = list(qs.values_list("id", flat=True))
+
+    qs.delete()  # QuerySet.delete(): Django ORM built-in deletes matching rows
+
+    # OPTIONAL (recommended): tell the receiver in real-time to remove it from UI
+    channel_layer = get_channel_layer()
+    for nid in notif_ids:
+        async_to_sync(channel_layer.group_send)(
+            f"notifications_{instance.receiver_id}",
+            {
+                "type": "notification_deleted",  # maps to consumer method name
+                "notification_id": nid,
+            },
+        )     
         
 # @receiver(post_save, sender=MeetupSchedule)
 # def notify_meetup_scheduled(sender, instance, created, **kwargs):
