@@ -614,7 +614,6 @@ class DeleteCoverPhotoView(APIView):
 
 class InfluencersView(APIView):
     permission_classes = [AllowAny] 
-    authentication_classes = []
     
     def get(self, request):
         # Start with the base query for influencers.
@@ -632,7 +631,6 @@ class InfluencersView(APIView):
 
 class FansView(APIView):
     permission_classes = [AllowAny] 
-    authentication_classes = []
     
     def get(self, request):
         # Start with the base query for fans.
@@ -649,8 +647,8 @@ class FansView(APIView):
         return Response({'fans': serializer.data}, status=status.HTTP_200_OK)
 
 class InfluencerDetailView(APIView):
-    permission_classes = [AllowAny] 
-    authentication_classes = []
+    
+    permission_classes = [AllowAny]
     
     def get(self, request, influencer_id):
         try:
@@ -663,7 +661,6 @@ class InfluencerDetailView(APIView):
     
 class FanDetailView(APIView):
     permission_classes = [AllowAny] 
-    authentication_classes = []
     
     def get(self, request, fan_id):
         try:
