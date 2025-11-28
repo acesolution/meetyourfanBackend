@@ -143,11 +143,14 @@ class AcceptFollowRequestView(APIView):
 
             # Update request status to accepted
             follow_request.status = "accepted"
-            follow_request.delete()  # Delete the request after accepting it
-
+            follow_request.save(update_fields=["status"])  # save(): Django model built-in -> persists + triggers post_save
+            
             # Create the Follower relationship
             Follower.objects.get_or_create(user=request.user, follower=follow_request.sender)
+            
+            follow_request.delete()  # Delete the request after accepting it
 
+            
             return Response({"message": f"You have accepted {follow_request.sender.username}'s follow request."}, status=200)
 
         except FollowRequest.DoesNotExist:
@@ -165,6 +168,10 @@ class DeclineFollowRequestView(APIView):
             follow_request = FollowRequest.objects.get(
                 sender_id=sender_id, receiver=request.user, status='pending'
             )
+            # Update request status to accepted
+            follow_request.status = "declined"
+            follow_request.save(update_fields=["status"])  # save(): Django model built-in -> persists + triggers post_save
+            
             follow_request.delete()  # Delete the request instead of marking it as declined.
             return Response(
                 {"message": f"You have declined {follow_request.sender.username}'s follow request."},

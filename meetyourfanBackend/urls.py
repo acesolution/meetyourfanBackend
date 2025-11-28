@@ -24,7 +24,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),
     path('', include('base.urls')),
-    path('profileapp/', include('profileapp.urls')),
+    path('api/profileapp/', include('profileapp.urls')),
     path('campaign/', include('campaign.urls')),
     path('api/messages/', include('messagesapp.urls')),
     path('api/notifications/', include('notificationsapp.urls')),
