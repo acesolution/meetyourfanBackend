@@ -20,9 +20,126 @@ from django.db import transaction, IntegrityError
 from django.db.models import Q
 from profileapp.signals import push_notification
 from django.utils.dateparse import parse_datetime
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+import json
+from api.models import Profile
+from messagesapp.serializers import MeetupInlineSerializer
 
 User = get_user_model()
 
+
+
+def _profile_payload(user, request=None):
+    """
+    Build sender profile payload similar to ChatConsumer.get_profile_data().
+    - getattr(): built-in safe attribute access with default
+    - request.build_absolute_uri(): built-in Django helper to make absolute URL
+    """
+    p = getattr(user, "profile", None)
+    name = getattr(p, "name", None) or user.username
+    pic = None
+    if p and getattr(p, "profile_picture", None):
+        try:
+            pic = p.profile_picture.url
+        except Exception:
+            pic = None
+
+    if request and pic and not str(pic).startswith("http"):
+        pic = request.build_absolute_uri(pic)
+
+    return {
+        "id": getattr(p, "id", None),
+        "name": name,
+        "profile_picture": pic,
+    }
+
+
+def _is_muted_for(conversation_id: int, user_id: int) -> bool:
+    """
+    Evaluate mute state without depending on a model method.
+    - None mute_until => muted indefinitely
+    - mute_until in future => muted
+    """
+    m = (ConversationMute.objects
+         .filter(conversation_id=conversation_id, user_id=user_id)
+         .only("mute_until")
+         .first())
+    if not m:
+        return False
+    if m.mute_until is None:
+        return True
+    return m.mute_until > timezone.now()
+
+
+def _unread_ids_for_user(conversation_id: int, user_id: int):
+    """
+    Unread = messages in ['sent','delivered'] excluding messages authored by that user_id.
+    values_list(): built-in ORM method that returns a flat list when flat=True
+    """
+    return list(
+        Message.objects
+        .filter(conversation_id=conversation_id, status__in=["sent", "delivered"])
+        .exclude(sender_id=user_id)
+        .values_list("id", flat=True)
+    )
+
+
+def _emit_chat_like_event(*, conversation: Conversation, message: Message, request, status_to_emit: str, active_meetup_payload):
+    """
+    Push to:
+      1) conversation_<id> (open chat tabs)
+      2) user_<id> (global conversation updates stream)
+    """
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return  # channels not configured (shouldn't happen in prod, but don't crash)
+
+    sender = message.sender
+    profile = _profile_payload(sender, request=request)
+
+    # 1) Send the message into the conversation room (ChatConsumer.chat_message)
+    async_to_sync(channel_layer.group_send)(
+        f"conversation_{conversation.id}",
+        {
+            "type": "chat_message",          # routes to ChatConsumer.chat_message
+            "conversation_id": str(conversation.id),
+            "message": message.content,
+            "user_id": sender.id,
+            "username": sender.username,
+            "profile": profile,
+            "status": status_to_emit,
+            "message_id": message.id,
+            "created_at": message.created_at.isoformat(),
+        },
+    )
+
+    # 2) Send conversation_update to each participant (ConversationUpdatesConsumer.conversation_update)
+    participant_ids = list(conversation.participants.values_list("id", flat=True))
+    sender_name = profile.get("name") or sender.username
+    sender_avatar = profile.get("profile_picture")
+
+    for uid in participant_ids:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{uid}",
+            {
+                "type": "conversation_update",
+                "conversation_id": conversation.id,
+                "last_message": {
+                    "content": message.content,
+                    "created_at": str(message.created_at),
+                    "id": message.id,
+                    "status": status_to_emit,
+                    "user_id": sender.id,
+                    "sender_name": sender_name,
+                    "sender_avatar": sender_avatar,
+                },
+                "updated_at": timezone.now().isoformat(),
+                "unread_ids": _unread_ids_for_user(conversation.id, uid),
+                "is_muted": _is_muted_for(conversation.id, uid),
+                "active_meetup": active_meetup_payload,  # NEW: let FE update meetup banner without refetch
+            },
+        )
 
 class ConversationListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -552,6 +669,87 @@ class ScheduleMeetupView(APIView):
                     status='pending'
                 )
                 created = True
+                
+        # after meetup is saved (inside your ScheduleMeetupView.post)
+
+        # 1) Find the conversation between influencer & winner for this campaign
+        conv = (Conversation.objects
+                .filter(participants=user)
+                .filter(participants=winner)
+                .filter(campaign=campaign)
+                .first())
+
+        # fallback: if campaign-linked conversation doesn't exist, use any direct convo
+        if not conv:
+            sig = _make_signature([user.id, winner.id])
+            conv = (Conversation.objects
+                    .filter(participant_signature=sig, category__in=["winner", "other"])
+                    .first())
+
+        # last resort: create it (race-safe)
+        if not conv:
+            sig = _make_signature([user.id, winner.id])
+            try:
+                with transaction.atomic():  # built-in: all-or-nothing
+                    conv = Conversation.objects.create(
+                        category="winner",
+                        campaign=campaign,
+                        created_by=user,
+                        participant_signature=sig,
+                    )
+                    conv.participants.set([user, winner])  # built-in M2M set()
+            except IntegrityError:
+                conv = (Conversation.objects
+                        .filter(participant_signature=sig, category__in=["winner", "other"])
+                        .first())
+
+        # 2) Optional cleanup: keep DB small (delete older rejected rows for same triplet)
+        MeetupSchedule.objects.filter(
+            campaign=campaign, influencer=user, winner=winner, status="rejected"
+        ).exclude(id=meetup.id).delete()
+
+        # 3) Create a “meetup event” message in chat
+        payload = {
+            "type": "meetup",
+            "action": "rescheduled" if (not created) else "scheduled",
+            "meetup_id": meetup.id,
+            "campaign_id": campaign.id,
+            "scheduled_datetime": meetup.scheduled_datetime.isoformat(),
+            "location": meetup.location,
+            "status": meetup.status,  # pending
+        }
+
+        # json.dumps(): built-in json encoder → string you can parse on FE
+        # keep it readable even if FE doesn't parse JSON:
+        content = f"MEETUP::{json.dumps(payload, separators=(',', ':'))}"
+
+        msg = Message.objects.create(
+            conversation=conv,
+            sender=user,
+            content=content,
+        )
+
+        # 4) Update delivered status instantly if recipient is online
+        recipient_ids = list(conv.participants.exclude(id=user.id).values_list("id", flat=True))
+        is_any_online = Profile.objects.filter(user_id__in=recipient_ids, is_online=True).exists()
+        status_to_emit = "sent"
+        if is_any_online:
+            Message.objects.filter(id=msg.id).update(status="delivered")
+            status_to_emit = "delivered"
+
+        # 5) bump conversation updated_at so ordering + restore-logic work
+        Conversation.objects.filter(id=conv.id).update(updated_at=timezone.now())
+
+        # 6) Emit websockets (chat + conversation list)
+        active_meetup_payload = MeetupInlineSerializer(meetup, context={"request": request}).data
+        _emit_chat_like_event(
+            conversation=conv,
+            message=msg,
+            request=request,
+            status_to_emit=status_to_emit,
+            active_meetup_payload=active_meetup_payload,
+        )
+
 
         # Notify winner
         verb = "rescheduled a meetup with you" if not created else "scheduled a meetup with you"
@@ -587,6 +785,63 @@ class RespondToMeetupView(APIView):
         # rejected → persist state (does NOT violate your uniqueness constraint)
         meetup.status = 'rejected'
         meetup.save()
+        
+        
+        # after meetup.save()
+
+        # find conversation (same logic)
+        conv = (Conversation.objects
+                .filter(participants=meetup.influencer)
+                .filter(participants=meetup.winner)
+                .filter(campaign=meetup.campaign)
+                .first())
+        if not conv:
+            sig = _make_signature([meetup.influencer_id, meetup.winner_id])
+            conv = (Conversation.objects
+                    .filter(participant_signature=sig, category__in=["winner", "other"])
+                    .first())
+
+        payload = {
+            "type": "meetup",
+            "action": "accepted" if meetup.status == "accepted" else "rejected",
+            "meetup_id": meetup.id,
+            "campaign_id": meetup.campaign_id,
+            "scheduled_datetime": meetup.scheduled_datetime.isoformat(),
+            "location": meetup.location,
+            "status": meetup.status,
+        }
+
+        content = f"MEETUP::{json.dumps(payload, separators=(',', ':'))}"
+
+        msg = Message.objects.create(
+            conversation=conv,
+            sender=request.user,  # winner
+            content=content,
+        )
+
+        recipient_ids = list(conv.participants.exclude(id=request.user.id).values_list("id", flat=True))
+        is_any_online = Profile.objects.filter(user_id__in=recipient_ids, is_online=True).exists()
+        status_to_emit = "sent"
+        if is_any_online:
+            Message.objects.filter(id=msg.id).update(status="delivered")
+            status_to_emit = "delivered"
+
+        Conversation.objects.filter(id=conv.id).update(updated_at=timezone.now())
+
+        active_meetup_payload = None
+        if meetup.status in ("pending", "accepted"):
+            active_meetup_payload = MeetupInlineSerializer(meetup, context={"request": request}).data
+
+        _emit_chat_like_event(
+            conversation=conv,
+            message=msg,
+            request=request,
+            status_to_emit=status_to_emit,
+            active_meetup_payload=active_meetup_payload,  # rejected => None
+        )
+
+        
+        
         push_notification(actor=user, recipient=meetup.influencer,
                           verb="rejected your meetup invitation", target=meetup)
         return Response({

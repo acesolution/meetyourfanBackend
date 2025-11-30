@@ -441,6 +441,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'last_message': event['last_message'],
             'updated_at': event['updated_at'],
             'unread_ids': event.get('unread_ids', []),
+            'is_muted': event.get('is_muted', False),          # NEW (you were sending it already)
+            'active_meetup': event.get('active_meetup', None), # NEW (for meetup UI sync)
         }))
         
     @sync_to_async
@@ -479,6 +481,8 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
             'last_message': event['last_message'],
             'updated_at': event['updated_at'],
             'unread_ids': event.get('unread_ids', []),
+            'is_muted': event.get('is_muted', False),          # NEW (you were sending it already)
+        'active_meetup': event.get('active_meetup', None), # NEW (for meetup UI sync)
         }))
 
 

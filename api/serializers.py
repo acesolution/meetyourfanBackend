@@ -87,44 +87,47 @@ class RegisterSerializer(serializers.ModelSerializer):
 import json  # built-in module to work with JSON
 
 class UserProfileUpdateSerializer(serializers.ModelSerializer):
-    profile = ProfileSerializer(required=False)  # Nested serializer for profile
+    profile = ProfileSerializer(required=False)
 
     class Meta:
-        model = User  # assuming your custom user model is named CustomUser
-        fields = ('id', 'username', 'email', 'phone_number', 'user_type', 'profile')
+        model = User
+        fields = ("id", "username", "email", "phone_number", "user_type", "profile")
 
     def update(self, instance, validated_data):
-        # Pop the nested profile data, if any.
-        profile_data = validated_data.pop('profile', {})
+        profile_data = validated_data.pop("profile", {})
 
-        # If profile_data is a JSON string, parse it to a dict.
         if isinstance(profile_data, str):
             try:
-                profile_data = json.loads(profile_data)
+                profile_data = json.loads(profile_data)  # json.loads(): built-in -> parses JSON string to dict
             except json.JSONDecodeError:
                 profile_data = {}
 
-        # Update user fields.
         for attr, value in validated_data.items():
-            # setattr(instance, attr, value) is a built-in function that assigns a value to an attribute on the object.
-            setattr(instance, attr, value)
-        instance.save()  # instance.save() is a Django ORM method that persists changes to the database.
+            setattr(instance, attr, value)  # setattr(): built-in -> sets attribute by name
+        instance.save()
 
-        # Update profile fields.
         profile = instance.profile
+
+        allowed_profile_fields = {"name", "bio", "date_of_birth", "status"}
         for attr, value in profile_data.items():
+            if attr not in allowed_profile_fields:
+                continue
+
+            if attr == "status" and value not in ("public", "private"):
+                raise serializers.ValidationError({"profile": {"status": "Invalid status"}})
+
             setattr(profile, attr, value)
 
-        # Check for file fields in the raw request data.
-        request = self.context.get('request')
+        request = self.context.get("request")
         if request:
-            if 'cover_photo' in request.data:
-                profile.cover_photo = request.data.get('cover_photo')
-            if 'profile_picture' in request.data:
-                profile.profile_picture = request.data.get('profile_picture')
-        profile.save()
+            if "cover_photo" in request.data:
+                profile.cover_photo = request.data.get("cover_photo")
+            if "profile_picture" in request.data:
+                profile.profile_picture = request.data.get("profile_picture")
 
+        profile.save()
         return instance
+
 
 
 
