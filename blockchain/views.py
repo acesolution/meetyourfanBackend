@@ -242,20 +242,50 @@ class DepositView(APIView):
 class SetUserWalletView(APIView):
     """
     POST /api/blockchain/set-wallet/
-    Body: { "user_id": "User123", "wallet": "0xFanWallet…" }
-    Only the OWNER may call this.
+    Body: { "user_id": "...", "wallet": "0x..." }
     """
-    
+
     def post(self, request):
-        user_id = int(request.data["user_id"], 10)
-        wallet  = request.data.get("wallet")
-        if not user_id or not wallet:
-            return Response({"error": "user_id and wallet are required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        user_id_raw = request.data.get("user_id")
+        wallet_raw  = request.data.get("wallet")
+
+        if not user_id_raw or not wallet_raw:
+            return Response(
+                {"error": "user_id and wallet are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # int() is built-in: converts string/number -> integer (Python big ints are OK)
+        try:
+            user_id = int(str(user_id_raw).strip())
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid user_id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # str() is built-in: ensures we always deal with a string
+        wallet_str = str(wallet_raw).strip()
+
+        # startswith() is built-in string method
+        if not wallet_str.startswith("0x"):
+            wallet_str = "0x" + wallet_str  # + is built-in string concat
+
+        # Web3.is_address validates hex + length (42 chars with 0x)
+        if not Web3.is_address(wallet_str):
+            return Response({"error": "Invalid wallet address."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Web3.to_checksum_address converts lowercase -> EIP-55 checksum (and raises if invalid)
+        try:
+            wallet_checksum = Web3.to_checksum_address(wallet_str)
+        except Exception:
+            return Response({"error": "Invalid wallet address format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Optional: block zero address
+        if wallet_checksum.lower() == "0x0000000000000000000000000000000000000000":
+            return Response({"error": "Zero address is not allowed."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             chain_id = w3.eth.chain_id
             nonce    = w3.eth.get_transaction_count(OWNER)
+
             tx_params = {
                 "chainId":  chain_id,
                 "from":     OWNER,
@@ -263,11 +293,17 @@ class SetUserWalletView(APIView):
                 "gas":      GAS_LIMIT,
                 "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
             }
-            tx_hash = _build_and_send(contract.functions.setUserWallet(user_id, wallet), tx_params)
-            return Response({"tx_hash": tx_hash})
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+            # IMPORTANT: pass checksum address to contract call
+            tx_hash = _build_and_send(
+                contract.functions.setUserWallet(user_id, wallet_checksum),
+                tx_params
+            )
+            return Response({"tx_hash": tx_hash})
+
+        except Exception as e:
+            # Better than leaking a python tuple-like error to FE; but keeping yours minimal:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class MyBalancesView(APIView):
     permission_classes = [IsAuthenticated]
 
