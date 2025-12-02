@@ -50,7 +50,7 @@ from api.utils import generate_unique_username_for_user
 import secrets
 from django.contrib.auth.password_validation import validate_password
 from django.utils.encoding import force_str
-
+from api.services.account_deletion import soft_delete_user
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -1464,3 +1464,17 @@ class UsernameResetByTokenView(APIView):
             data["profile"] = ProfileSerializer(prof, context={"request": request}).data
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+
+class DeleteMyAccountView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        user = request.user
+        reason = request.data.get("reason", "")  # dict.get is built-in: returns value or default
+
+        soft_delete_user(user, reason=reason)
+
+        # 204 = success, no content
+        return Response(status=status.HTTP_204_NO_CONTENT)

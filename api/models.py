@@ -8,7 +8,7 @@ import string
 import uuid
 from .utils import generate_user_id_int
 from meetyourfanBackend.storage_backends import PublicMediaStorage, PrivateMediaStorage
-
+from django.utils import timezone
 # Create your models here.
 
 def generate_user_id():
@@ -172,3 +172,32 @@ class UsernameResetToken(models.Model):
 
     def __str__(self):
         return f"Username reset token for {self.user.username}"
+
+
+
+class DeletedAccount(models.Model):
+    """
+    Stores a snapshot of user identity at time of deletion request.
+    Keep it simple and immutable for audit/support.
+    """
+    deleted_at = models.DateTimeField(default=timezone.now)  # timezone.now: callable returns aware datetime
+
+    # Snapshot fields
+    user_pk   = models.BigIntegerField(null=True, blank=True)   # User table PK at time of delete
+    user_id   = models.CharField(max_length=256, blank=True, null=True)
+    username  = models.CharField(max_length=150, blank=True, null=True)
+    email     = models.EmailField(blank=True, null=True)
+    user_type = models.CharField(max_length=20, blank=True, null=True)
+
+    # Optional profile data
+    name      = models.CharField(max_length=100, blank=True, null=True)
+
+    # Optional: why / metadata (safe to add now)
+    reason    = models.CharField(max_length=255, blank=True, null=True)
+
+    class Meta:
+        ordering = ["-deleted_at"]
+
+    def __str__(self):
+        # f-string is built-in Python formatting
+        return f"DeletedAccount({self.email or self.username or self.user_id}) at {self.deleted_at}"
