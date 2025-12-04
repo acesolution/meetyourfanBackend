@@ -1466,15 +1466,14 @@ class UsernameResetByTokenView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
-
 class DeleteMyAccountView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def delete(self, request):
+    def post(self, request, *args, **kwargs):
         user = request.user
-        reason = request.data.get("reason", "")  # dict.get is built-in: returns value or default
-
+        reason = request.data.get("reason", "")  # dict.get: built-in — default if key missing
         soft_delete_user(user, reason=reason)
-
-        # 204 = success, no content
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def delete(self, request, *args, **kwargs):
+        return self.post(request, *args, **kwargs)  # reuse same logic
