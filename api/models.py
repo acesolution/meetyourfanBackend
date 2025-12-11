@@ -9,10 +9,18 @@ import uuid
 from .utils import generate_user_id_int
 from meetyourfanBackend.storage_backends import PublicMediaStorage, PrivateMediaStorage
 from django.utils import timezone
-# Create your models here.
+from django.contrib.auth.models import AbstractUser, UserManager  # UserManager = Django’s default auth manager
+
 
 def generate_user_id():
     return uuid.uuid4().hex
+
+
+class ActiveUserManager(UserManager):
+    def get_queryset(self):
+        # super().get_queryset(): built-in — returns base QuerySet for this model
+        # filter(...): built-in QuerySet filter — returns only matching rows
+        return super().get_queryset().filter(is_active=True)
 
 class CustomUser(AbstractUser):
     email = models.EmailField(unique=True)
@@ -33,6 +41,13 @@ class CustomUser(AbstractUser):
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
+    
+    
+    # ✅ Default manager: ONLY active users (no deleted)
+    objects = ActiveUserManager()       # used everywhere in normal code
+
+    # ✅ Raw manager: includes deleted / inactive (for admin, audits, etc.)
+    all_objects = UserManager()         # use explicitly if you *need* to see deleted rows
 
 
 class Profile(models.Model):
