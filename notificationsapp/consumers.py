@@ -28,12 +28,14 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         logger.debug(f"Received data in notifications consumer: {data}")
 
     async def send_notification(self, event):
-        await self.send(json.dumps(event["notification"]))
+        await self.send(text_data=json.dumps(event["notification"]))
         
     async def notification_deleted(self, event):
         # send_json(): channels built-in helper (if you're using AsyncJsonWebsocketConsumer)
-        await self.send_json({
-            "action": "delete",
-            "id": event.get("notification_id"),
-        })
+        await self.send(
+            text_data=json.dumps({
+                "action": "delete",
+                "id": event.get("notification_id"),
+            })
+        )
 

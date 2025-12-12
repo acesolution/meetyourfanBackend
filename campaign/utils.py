@@ -20,13 +20,22 @@ def select_random_winners(campaign_id):
     from campaign.models import Campaign, Participation, CampaignWinner
 
     campaign = Campaign.objects.get(id=campaign_id)
-    participants = list(Participation.objects.filter(campaign=campaign))
+    participants = list(
+        Participation.objects
+        .filter(
+            campaign=campaign,
+            fan__is_active=True,        # built-in: JOIN on user; only active (not soft-deleted) fans
+        )
+    )
 
     # 1) optional: exclude prior winners
     if campaign.exclude_previous_winners:
         past = set(
             CampaignWinner.objects
-            .filter(campaign__user=campaign.user)
+            .filter(
+                campaign__user=campaign.user,
+                fan__is_active=True,    # only consider winners who are still active
+            )
             .values_list('fan_id', flat=True)
         )
         participants = [p for p in participants if p.fan_id not in past]
@@ -238,7 +247,7 @@ def bulk_dm_all_winners(campaign, sender, text: str):
     from campaign.models import  CampaignWinner
     
     conv_ids = []
-    for cw in CampaignWinner.objects.filter(campaign=campaign).select_related("fan"):
+    for cw in CampaignWinner.objects.filter(campaign=campaign, fan__is_active=True).select_related("fan"):
         conv, _ = get_or_create_winner_conversation(sender, cw.fan, campaign)
         Message.objects.create(conversation=conv, sender=sender, content=text)
         conv_ids.append(conv.id)

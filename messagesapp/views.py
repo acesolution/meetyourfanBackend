@@ -79,7 +79,11 @@ def _unread_ids_for_user(conversation_id: int, user_id: int):
     """
     return list(
         Message.objects
-        .filter(conversation_id=conversation_id, status__in=["sent", "delivered"])
+        .filter(
+            conversation_id=conversation_id,
+            status__in=["sent", "delivered"],
+            sender__is_active=True,     # 👈 important
+        )
         .exclude(sender_id=user_id)
         .values_list("id", flat=True)
     )
@@ -189,7 +193,12 @@ class CreateConversationView(APIView):
             return Response({"error": "Participants are required."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Deduplicate and fetch users in one query (built-in ORM filter + __in)
-        participants = list(User.objects.filter(id__in=set(participants_ids)))
+        participants = list(
+            User.objects.filter(
+                id__in=set(participants_ids),
+                is_active=True,          # 👈 only active users can be chat participants
+            )
+        )
         if not participants:
             return Response({"error": "Invalid participants."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -302,10 +311,19 @@ class MessageListView(APIView):
         
         # If the user has deleted this conversation, only include messages after deletion.
         deletion = conversation.deletions.filter(user=request.user).first()
+        # Start from all messages and apply deletion + visibility rules.
+        base_qs = conversation.messages.all()
         if deletion:
-            messages_qs = conversation.messages.filter(created_at__gt=deletion.deleted_at).order_by('-created_at')
-        else:
-            messages_qs = conversation.messages.all().order_by('-created_at')
+            base_qs = base_qs.filter(created_at__gt=deletion.deleted_at)
+
+        # Only show:
+        #   - messages from active users
+        #   - OR messages from me (in practice I'm always active here)
+        base_qs = base_qs.filter(
+            Q(sender__is_active=True) | Q(sender=request.user)
+        )
+
+        messages_qs = base_qs.order_by('-created_at')
         
         # Paginate the messages queryset.
         paginator = MessagePagination()
@@ -317,7 +335,7 @@ class MessageListView(APIView):
         # Compute a list of unread message IDs for the conversation.
         # A message is considered unread if its status is either "sent" or "delivered"
         # and it was not sent by the current user.
-        unread_messages = conversation.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user)
+        unread_messages = conversation.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user, sender__is_active=True,)
         unread_ids = list(unread_messages.values_list('id', flat=True))
 
         # Get the default paginated response and add the "unread_ids" field.
@@ -479,7 +497,12 @@ class MessageSearchView(APIView):
         if not q:
             return Response({'results': [], 'count': 0, 'next': None, 'previous': None}, status=200)
 
-        qs = conv.messages.filter(content__icontains=q).order_by('-created_at')
+        qs = conv.messages.filter(
+            content__icontains=q
+        ).filter(
+            Q(sender__is_active=True) | Q(sender=request.user)
+        ).order_by('-created_at')
+
         paginator = SearchPagination()
         page = paginator.paginate_queryset(qs, request)
         ser = MessageSerializer(page, many=True, context={'request': request})
@@ -502,13 +525,20 @@ class MessagesAroundView(APIView):
         window = max(10, min(window, 200))
 
         before = list(
-            conv.messages.filter(created_at__lt=anchor.created_at)
-            .order_by('-created_at')[:window]
+            conv.messages.filter(
+                created_at__lt=anchor.created_at
+            ).filter(
+                Q(sender__is_active=True) | Q(sender=request.user)
+            ).order_by('-created_at')[:window]
         )
         after = list(
-            conv.messages.filter(created_at__gte=anchor.created_at)
-            .order_by('created_at')[:window]
+            conv.messages.filter(
+                created_at__gte=anchor.created_at
+            ).filter(
+                Q(sender__is_active=True) | Q(sender=request.user)
+            ).order_by('created_at')[:window]
         )
+
         items = before[::-1] + after  # chronological asc
         ser = MessageSerializer(items, many=True, context={'request': request})
         return Response({'results': ser.data, 'anchor_id': anchor.id}, status=200)
@@ -555,7 +585,9 @@ class AddableParticipantsView(APIView):
 
       # exclude current members
       existing_ids = conv.participants.values_list("id", flat=True)
-      qs = User.objects.exclude(id__in=existing_ids)
+      qs = User.objects.filter(
+        is_active=True
+      ).exclude(id__in=existing_ids)
 
       if q:
           qs = qs.filter(
@@ -603,7 +635,12 @@ class AddParticipantsView(APIView):
             if BlockedUsers.objects.filter(blocker=u, blocked=request.user).exists():
                 return Response({'error': f'{u.username} has blocked you.'}, status=403)
 
-        users = list(User.objects.filter(id__in=ids))
+        users = list(
+            User.objects.filter(
+                id__in=ids,
+                is_active=True,          # don’t add soft-deleted users
+            )
+        )
         if users:
             conv.participants.add(*users)  # built-in: bulk add M2M
             conv.save(update_fields=['updated_at'])
@@ -639,7 +676,7 @@ class ScheduleMeetupView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
 
         campaign = get_object_or_404(Campaign, id=campaign_id, user=user)
-        winner = get_object_or_404(User, id=winner_id)
+        winner = get_object_or_404(User, id=winner_id, is_active=True)
 
         with transaction.atomic():
             existing = MeetupSchedule.objects.select_for_update().filter(

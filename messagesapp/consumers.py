@@ -26,9 +26,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.user = self.scope['user']
         #logger.debug(f"User in connect: {self.user}")
 
-        if not self.user.is_authenticated:
-            #logger.error("Unauthenticated user attempted to connect.")
-            await self.close()  # Reject unauthenticated connections
+        # If not authenticated OR soft-deleted, refuse the connection.
+        if (not self.user.is_authenticated) or (not getattr(self.user, "is_active", True)):
+            await self.close()
             return
 
         self.conversation_id = self.scope['url_route']['kwargs']['conversation_id']
@@ -427,7 +427,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         conversation = Conversation.objects.get(id=self.conversation_id)
         unread_messages = Message.objects.filter(
             conversation=conversation,
-            status__in=['sent', 'delivered']
+            status__in=['sent', 'delivered'],
+            sender__is_active=True,
         ).exclude(sender=self.user)  # Optionally exclude messages from the sender
         # Return only the list of message IDs.
         return list(unread_messages.values_list('id', flat=True))
@@ -453,7 +454,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def _unread_ids_for_user(self, uid: int):
         return list(Message.objects
-            .filter(conversation_id=self.conversation_id, status__in=["sent","delivered"])
+            .filter(
+                conversation_id=self.conversation_id,
+                status__in=["sent", "delivered"],
+                sender__is_active=True,  # ignore deleted senders
+            )
             .exclude(sender_id=uid).values_list("id", flat=True))
 
 
@@ -462,7 +467,8 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """Accept connection for global conversation updates if user is authenticated."""
         self.user = self.scope['user']
-        if not self.user.is_authenticated:
+        # If not authenticated OR soft-deleted, refuse the connection.
+        if (not self.user.is_authenticated) or (not getattr(self.user, "is_active", True)):
             await self.close()
             return
         
@@ -492,7 +498,8 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
 class PresenceConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user = self.scope["user"]
-        if not self.user.is_authenticated:
+        # If not authenticated OR soft-deleted, refuse the connection.
+        if (not self.user.is_authenticated) or (not getattr(self.user, "is_active", True)):
             await self.close()
             return
         await self.accept()
@@ -545,7 +552,11 @@ class PresenceConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def _unread_ids_for_self(self, conv_id: int):
         return list(Message.objects
-            .filter(conversation_id=conv_id, status__in=["sent","delivered"])
+            .filter(
+                conversation_id=conv_id,
+                status__in=["sent","delivered"],
+                sender__is_active=True,   # keep consistent
+            )
             .exclude(sender_id=self.user.id)
             .values_list("id", flat=True))
 

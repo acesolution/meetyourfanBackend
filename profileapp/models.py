@@ -4,6 +4,8 @@ from django.db import models
 from django.conf import settings
 
 
+
+
 class BlockedUsers(models.Model):
     blocker = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='blocking')
     blocked = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='blocked_by')

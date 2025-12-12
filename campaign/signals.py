@@ -23,6 +23,10 @@ def push_notification(actor, recipient, verb, target):
     Creates a Notification record and pushes it via the channel layer,
     including the actor’s profile data in the payload.
     """
+    # 👇 Don’t notify soft-deleted / inactive accounts
+    if hasattr(recipient, "is_active") and not recipient.is_active:
+        return None
+    
     channel_layer = get_channel_layer()
     # Create the notification record in the database
     notification = Notification.objects.create(
@@ -84,7 +88,9 @@ def notify_participation(sender, instance, created, **kwargs):
             target=campaign
         )
         # Optionally, notify other participants (excluding the one who just participated)
-        for participation in campaign.participations.exclude(fan=actor):
+        for participation in campaign.participations.exclude(fan=actor).filter(
+            fan__is_active=True
+        ):
             push_notification(
                 actor=actor,
                 recipient=participation.fan,
@@ -101,7 +107,9 @@ def notify_campaign_closed(sender, instance, **kwargs):
         campaign = instance
         actor = campaign.user  # Use the influencer as the actor (or use a system user if preferred)
         # Notify all participants about the campaign closure
-        for participation in campaign.participations.all():
+        for participation in campaign.participations.filter(
+            fan__is_active=True
+        ):
             push_notification(
                 actor=actor,
                 recipient=participation.fan,

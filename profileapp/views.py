@@ -12,8 +12,32 @@ from rest_framework.permissions import AllowAny
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import NotFound   # DRF built-in: raises 404 response
 
 User = get_user_model()
+
+
+def get_active_user_or_404(user_id):
+    """
+    Resolve a *still-active* user by PK.
+    - Treat soft-deleted / inactive users as "not found".
+    """
+    if not user_id:
+        # NotFound: DRF exception that DRF turns into a 404 JSON response
+        raise NotFound("User not found.")
+
+    try:
+        # .get(): Django ORM built-in — fetch single row, or raise DoesNotExist
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        raise NotFound("User not found.")
+
+    # extra safety in case you haven't switched to an is_active-only manager yet
+    if not getattr(user, "is_active", True):   # getattr: built-in "get attribute or default"
+        raise NotFound("User not found.")
+
+    return user
+
 
 
 class BlockUserView(APIView):
@@ -22,9 +46,10 @@ class BlockUserView(APIView):
     def post(self, request, blocked_user_id):
         if not blocked_user_id:
             return Response({'error': 'Blocked user ID is required.'}, status=400)
-
+        # ✅ use helper → deleted/inactive ⇒ 404
+        blocked_user = get_active_user_or_404(blocked_user_id)
         try:
-            blocked_user = User.objects.get(id=blocked_user_id)
+            
             if blocked_user == request.user:
                 return Response({'error': "You cannot block yourself."}, status=400)
 
@@ -46,9 +71,10 @@ class UnblockUserView(APIView):
     def post(self, request, blocked_user_id):
         if not blocked_user_id:
             return Response({'error': 'Blocked user ID is required.'}, status=400)
-
+        # even if user is deleted, this will raise 404 and that's fine
+        blocked_user = get_active_user_or_404(blocked_user_id)
         try:
-            blocked_user = User.objects.get(id=blocked_user_id)
+            
 
             # For Option 1: Using BlockedUsers Model
             BlockedUsers.objects.filter(blocker=request.user, blocked=blocked_user).delete()
@@ -68,9 +94,11 @@ class UnfollowUserView(APIView):
         
         if not user_id:
             return Response({'error': 'User ID is required.'}, status=400)
-
+        # If the user was deleted/soft-deleted, this will 404.
+        # That’s fine: FE should treat it as "user no longer exists".
+        user_to_unfollow = get_active_user_or_404(user_id)
         try:
-            user_to_unfollow = User.objects.get(id=user_id)
+            
 
             # Delete the follower relationship
             Follower.objects.filter(user=user_to_unfollow, follower=request.user).delete()
@@ -91,12 +119,14 @@ class FollowUserView(APIView):
         # Check if a user_id is provided
         if not user_id:
             return Response({'error': 'User ID is required.'}, status=400)
+        
+        target_user = get_active_user_or_404(user_id)
 
         try:
             # Attempt to retrieve the target user by ID.
             # User.objects.get() is a Django ORM method that retrieves a single object
             # matching the given parameters. If no object is found, it raises User.DoesNotExist.
-            target_user = User.objects.get(id=user_id)
+            # ✅ use helper so deleted or inactive users behave as 404
 
             # Prevent users from following themselves.
             if target_user == request.user:
@@ -139,8 +169,12 @@ class AcceptFollowRequestView(APIView):
             return Response({"error": "Sender ID is required."}, status=400)
 
         try:
-            follow_request = FollowRequest.objects.get(sender_id=sender_id, receiver=request.user, status='pending')
-
+            follow_request = FollowRequest.objects.select_related("sender").get(
+                sender_id=sender_id,
+                receiver=request.user,
+                status='pending',
+                sender__is_active=True,   # extra guard: sender must still be active
+            )
             # Update request status to accepted
             follow_request.status = "accepted"
             follow_request.save(update_fields=["status"])  # save(): Django model built-in -> persists + triggers post_save
@@ -166,7 +200,10 @@ class DeclineFollowRequestView(APIView):
             return Response({"error": "Sender ID is required."}, status=400)
         try:
             follow_request = FollowRequest.objects.get(
-                sender_id=sender_id, receiver=request.user, status='pending'
+                sender_id=sender_id,
+                receiver=request.user,
+                status='pending',
+                sender__is_active=True,  # safety: don’t handle deleted senders
             )
             # Update request status to accepted
             follow_request.status = "declined"
@@ -191,7 +228,12 @@ class CancelFollowRequestView(APIView):
             return Response({"error": "Receiver ID is required."}, status=400)
 
         try:
-            follow_request = FollowRequest.objects.get(sender=request.user, receiver_id=receiver_id, status='pending')
+            follow_request = FollowRequest.objects.get(
+                sender=request.user,
+                receiver_id=receiver_id,
+                status='pending',
+                receiver__is_active=True,   # safety: don’t allow cancel to deleted receiver
+            )
             follow_request.delete()
             return Response({"message": "Follow request canceled."}, status=200)
 
@@ -205,7 +247,10 @@ class BlockedUsersListView(APIView):
     
     def get(self, request):
         user = request.user  # Get the current authenticated user
-        blocked_users = BlockedUsers.objects.filter(blocker=user)
+        blocked_users = BlockedUsers.objects.filter(
+            blocker=user,
+            blocked__is_active=True,  # Django double-underscore: join on FK + filter active users
+        )
         serializer = BlockedUsersSerializer(blocked_users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
     
@@ -215,8 +260,12 @@ class FollowRequestsListView(APIView):
     
     def get(self, request):
         user = request.user  # Get the current authenticated user
-        follow_requests = FollowRequest.objects.filter(receiver=user)
+        follow_requests = FollowRequest.objects.filter(
+            receiver=user,
+            sender__is_active=True,  # optional: only active senders here too
+        )
         serializer = FollowRequestSerializer(follow_requests, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     
 class FollowersListView(APIView):
@@ -224,9 +273,16 @@ class FollowersListView(APIView):
 
     def get(self, request):
         # Accepted followers where you are the target.
-        followers_qs = Follower.objects.filter(user=request.user)
+        followers_qs = Follower.objects.filter(
+            user=request.user,
+            follower__is_active=True,     # ✅ only active followers
+        )
         # Pending follow requests where you are the receiver.
-        pending_qs = FollowRequest.objects.filter(receiver=request.user, status='pending')
+        pending_qs = FollowRequest.objects.filter(
+            receiver=request.user,
+            status='pending',
+            sender__is_active=True,       # ✅ only active senders
+        )
         
         # Optional: filter by username if a search query is provided.
         search_query = request.query_params.get('search')
@@ -249,9 +305,16 @@ class FollowingListView(APIView):
 
     def get(self, request):
         # Accepted followings: users you are following.
-        accepted_qs = Follower.objects.filter(follower=request.user)
+        accepted_qs = Follower.objects.filter(
+            follower=request.user,
+            user__is_active=True,         # ✅ only active users you follow
+        )
         # Pending follow requests: requests you have sent.
-        pending_qs = FollowRequest.objects.filter(sender=request.user, status='pending')
+        pending_qs = FollowRequest.objects.filter(
+            sender=request.user,
+            status='pending',
+            receiver__is_active=True,     # ✅ only active receivers
+        )
         
         search_query = request.query_params.get('search')
         if search_query:
@@ -287,11 +350,8 @@ class ReportUserView(APIView):
             return Response({"error": "reported_id and category are required."},
                             status=status.HTTP_400_BAD_REQUEST)
         
-        try:
-            reported = User.objects.get(id=reported_id)
-        except User.DoesNotExist:
-            return Response({"error": "Reported user not found."},
-                            status=status.HTTP_404_NOT_FOUND)
+        # ✅ treat deleted/inactive as "not found"
+        reported = get_active_user_or_404(reported_id)
         
         # Prevent users from reporting themselves.
         if request.user.id == reported.id:

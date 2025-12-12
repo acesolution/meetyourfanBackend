@@ -8,6 +8,8 @@ from api.models import Profile
 from campaign.models import Campaign
 from profileapp.models import BlockedUsers
 from django.utils import timezone
+from django.db.models import Q   # Q: built-in helper to build OR/AND conditions
+
 
 User = get_user_model()
 
@@ -26,10 +28,30 @@ class ProfileMessagesSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     profile = ProfileMessagesSerializer(read_only=True)
-    
+    username = serializers.SerializerMethodField()   # overrides model field in output
+    email = serializers.SerializerMethodField()      # same for email
+
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'user_type', 'profile']
+
+    def get_username(self, obj):
+        """
+        If the account was soft-deleted (is_active=False), hide the original username.
+        This matches the “name removed” behavior (show generic label instead of deleted_<uuid>).
+        """
+        if not obj.is_active:
+            return "Deleted user"
+        return obj.username
+
+    def get_email(self, obj):
+        """
+        Never expose the anonymized deleted+UUID email to clients.
+        """
+        if not obj.is_active:
+            return None
+        return obj.email
+
         
 
 
@@ -90,13 +112,13 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_unread_message_count(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return obj.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user).count()
+            return obj.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user, sender__is_active=True,).count()
         return 0
 
     def get_unread_ids(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            unread_messages = obj.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user)
+            unread_messages = obj.messages.filter(status__in=['sent', 'delivered']).exclude(sender=request.user, sender__is_active=True,)
             return list(unread_messages.values_list('id', flat=True))
         return []
 
@@ -109,13 +131,22 @@ class ConversationSerializer(serializers.ModelSerializer):
         return UserSerializer(others, many=True, context=self.context).data
 
     def get_last_message(self, obj):
-        last_msg = obj.messages.order_by('-created_at').first()
+        request = self.context.get("request")
+        qs = obj.messages.all()
+
+        if request and request.user.is_authenticated:
+            # Only messages that are visible to this user:
+            #   - from active senders
+            #   - OR from the user themselves
+            qs = qs.filter(
+                Q(sender__is_active=True) | Q(sender=request.user)
+            )
+        last_msg = qs.order_by('-created_at').first()
         if last_msg:
             serializer = MessageSerializer(last_msg, context=self.context)
             data = serializer.data
-            request = self.context.get("request")
             if request and request.user.is_authenticated:
-                data['sent_by_me'] = (last_msg.sender.id == request.user.id)
+                data['sent_by_me'] = (last_msg.sender_id == request.user.id)
             else:
                 data['sent_by_me'] = False
             return data

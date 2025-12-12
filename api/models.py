@@ -50,6 +50,14 @@ class CustomUser(AbstractUser):
     all_objects = UserManager()         # use explicitly if you *need* to see deleted rows
 
 
+
+class ActiveProfileManager(models.Manager):
+    def get_queryset(self):
+        # user__is_active: double-underscore join — built-in syntax to filter on related model fields
+        return super().get_queryset().filter(user__is_active=True)
+
+
+
 class Profile(models.Model):
     STATUS_CHOICES = [
         ('public', 'Public'),
@@ -72,6 +80,11 @@ class Profile(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ✅ Default manager: only profiles whose user is active
+    objects = ActiveProfileManager()
+    # Optional raw manager if you ever need all:
+    all_objects = models.Manager()
     
     
 

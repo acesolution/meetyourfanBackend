@@ -223,6 +223,11 @@ class UnifiedEngagementView(APIView):
         else:
             campaign = None
             qs_part = Participation.objects.filter(campaign__user=user)
+            
+        # 👇 derived queryset with only non-deleted (active) users
+        qs_part_active = qs_part.filter(
+            fan__is_active=True   # built-in: WHERE auth_user.is_active = TRUE
+        )
 
         # ── Totals (paid entries vs free) ─────────────────────────────────────
         # built-in: Coalesce(Sum(...), 0) → if NULL then 0
@@ -237,8 +242,10 @@ class UnifiedEngagementView(APIView):
         # built-in: Sum('amount') → total revenue; free entries have amount=0 anyway
         total_earning = qs_part.aggregate(v=Coalesce(Sum("amount"), Decimal("0")))["v"] or Decimal("0")
 
-        # built-in: COUNT(DISTINCT fan)
-        total_participants = qs_part.values("fan").distinct().count()
+        # 👇 participants count = only active users
+        total_participants = (
+            qs_part_active.values("fan").distinct().count()
+        )  # built-in: DISTINCT COUNT(fan_id)
 
         # Likes + winners + goals
         if scope == "campaign":
@@ -316,7 +323,7 @@ class UnifiedEngagementView(APIView):
 
         # Top participants by entries
         top_raw = (
-            qs_part.filter(is_free_entry=False)
+            qs_part_active.filter(is_free_entry=False)
             .values("fan")
             .annotate(
                 t=Coalesce(Sum("tickets_purchased"), 0),
@@ -636,7 +643,7 @@ def perform_participation(
         escrow = EscrowRecord.objects.create(
             user=fan,
             campaign=campaign,
-            campaign_id=str(campaign.id),
+            onchain_campaign_id=str(campaign.id),
             tt_amount=spent_tt_whole,
             credit_amount=cost_in_credits,
             status="held",
@@ -877,11 +884,16 @@ class ParticipantsView(APIView):
             return Response(
                 {"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND
             )
+            
+        base_qs = Participation.objects.filter(
+            campaign=campaign,
+            fan__is_active=True,      # 👈 only active participants are listed
+        )
 
         # If the campaign type is media_selling, aggregate media_purchased; otherwise, aggregate tickets_purchased.
         if campaign.campaign_type == "media_selling":
             aggregated = (
-                Participation.objects.filter(campaign=campaign)
+                base_qs
                 .values("fan")
                 .annotate(
                     total_tickets_purchased=Sum("media_purchased"),
@@ -890,7 +902,7 @@ class ParticipantsView(APIView):
             )
         else:
             aggregated = (
-                Participation.objects.filter(campaign=campaign)
+                base_qs
                 .values("fan")
                 .annotate(
                     total_tickets_purchased=Sum("tickets_purchased"),
@@ -938,7 +950,7 @@ class WinnersView(APIView):
                 "winners_count": 0,
             }, status=status.HTTP_200_OK)
 
-        winners_qs = CampaignWinner.objects.filter(campaign=campaign).select_related('fan', 'fan__profile')
+        winners_qs = CampaignWinner.objects.filter(campaign=campaign, fan__is_active=True,).select_related('fan', 'fan__profile')
         serializer = CampaignWinnerSerializer(winners_qs, many=True)
 
         return Response({
@@ -1151,7 +1163,7 @@ class InfluencerWinnersView(APIView):
             )
 
         # Filter CampaignWinner objects for campaigns created by this influencer.
-        winners = CampaignWinner.objects.filter(campaign__user=influencer)
+        winners = CampaignWinner.objects.filter(campaign__user=influencer, fan__is_active=True)
 
         # Serialize the results. (You may want to extend CampaignWinnerSerializer to include more details.)
         serializer = CampaignWinnerSerializer(

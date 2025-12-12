@@ -173,7 +173,7 @@ class BaseCampaignSerializer(serializers.ModelSerializer):
     
     def get_participants_count(self, obj):
         # Simply count the number of Participation records for this campaign.
-        return obj.participations.count()
+        return obj.participations.filter(fan__is_active=True).count()
 
 # Update TicketCampaignSerializer to include nested user data
 class TicketCampaignSerializer(serializers.ModelSerializer):
@@ -451,7 +451,7 @@ class InfluencerCampaignSerializer(serializers.ModelSerializer):
         return False
 
     def get_participants_count(self, obj):
-        return obj.participations.count()
+        return obj.participations.filter(fan__is_active=True).count()
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -562,7 +562,7 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
         if not obj.is_closed:
             return 0
         # once closed, count how many winners have been picked
-        return obj.winners.count()
+        return obj.winners.filter(fan__is_active=True).count()
 
     # Overrides the default representation to include extra data.
     def to_representation(self, instance):
