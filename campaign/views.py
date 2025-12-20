@@ -82,6 +82,9 @@ from django.db.models.functions import TruncDate, Coalesce  # built-in: SQL DATE
 from django.db.models import Sum, Count, Q, Value, IntegerField  # built-in: aggregations & query helpers
 from decimal import Decimal
 from datetime import timedelta
+from campaign.signals import push_notification  # reuse your existing helper
+from django.contrib.contenttypes.models import ContentType  # ContentType: built-in model that stores model <-> id mapping
+from notificationsapp.models import Notification
 
 User = get_user_model()
 
@@ -556,7 +559,32 @@ class WinnerSelectionView(APIView):
             winners = select_random_winners(campaign.id)
             campaign.winners_selected = True
             campaign.save(update_fields=["winners_selected"])
+
+            # Human-facing message
             message = f"Holds released; selected {len(winners)} winner(s)."
+
+            # ✅ NEW: make sure each winner has a "you won the campaign" notification
+            # ContentType.objects.get_for_model(): built-in ORM helper -> returns ContentType row for a model
+            ct = ContentType.objects.get_for_model(Campaign)
+
+            for w in winners:
+                # Check if such a notification already exists (maybe created by the CampaignWinner signal)
+                has_win_notif = Notification.objects.filter(
+                    recipient=w,
+                    actor=user,
+                    verb="you won the campaign",
+                    target_content_type=ct,
+                    target_object_id=campaign.id,
+                ).exists()  # exists(): QuerySet built-in -> checks "any row?" without loading them
+
+                if not has_win_notif:
+                    # Reuse your push_notification helper so WS + DB stay in sync
+                    push_notification(
+                        actor=user,          # influencer
+                        recipient=w,         # winner
+                        verb="you won the campaign",
+                        target=campaign,     # GenericForeignKey will store content_type + object_id
+                    )
 
         # Build response
         return Response(

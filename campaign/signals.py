@@ -1,6 +1,6 @@
 # campaign/signals.py
 
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 from campaign.models import Participation, Campaign, CampaignWinner, MediaFile
@@ -15,8 +15,34 @@ from PIL import Image, ImageFilter
 from io import BytesIO
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+
+User = get_user_model()
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(pre_save, sender=Campaign, dispatch_uid="campaign_closed_state_tracker_v1")
+def _track_campaign_is_closed(sender, instance: Campaign, **kwargs):
+    """
+    Track the old value of is_closed BEFORE saving.
+
+    Why:
+    - post_save runs AFTER save (so you can't easily know if is_closed changed)
+    - We'll store the previous value on the instance to detect a transition.
+    """
+    if not instance.pk:
+        # New campaign (no DB row yet)
+        instance._was_closed = False
+        return
+
+    # built-in: .values_list("field", flat=True) returns a list-like of that field only
+    # built-in: .first() returns first row or None (no exception)
+    old_val = sender.objects.filter(pk=instance.pk).values_list("is_closed", flat=True).first()
+    instance._was_closed = bool(old_val)
+    
+    
 
 def push_notification(actor, recipient, verb, target):
     """
@@ -72,6 +98,9 @@ def push_notification(actor, recipient, verb, target):
     )
     return notification
 
+
+
+
 # ------------------------------
 # When a Participation is created
 # ------------------------------
@@ -101,28 +130,70 @@ def notify_participation(sender, instance, created, **kwargs):
 # ------------------------------
 # When a Campaign is closed
 # ------------------------------
-@receiver(post_save, sender=Campaign)
-def notify_campaign_closed(sender, instance, **kwargs):
-    if instance.is_closed:
-        campaign = instance
-        actor = campaign.user  # Use the influencer as the actor (or use a system user if preferred)
-        # Notify all participants about the campaign closure
-        for participation in campaign.participations.filter(
-            fan__is_active=True
-        ):
+@receiver(post_save, sender=Campaign, dispatch_uid="campaign_closed_notify_v2")
+def notify_campaign_closed(sender, instance: Campaign, created, **kwargs):
+    """
+    Notify participants exactly once when the campaign transitions from open -> closed.
+    Also dedupe at DB-level to be safe even if this runs twice.
+    """
+    if created:
+        return
+
+    # Only notify when it JUST became closed (False -> True)
+    was_closed = getattr(instance, "_was_closed", False)
+    if was_closed:
+        return
+    if not instance.is_closed:
+        return
+
+    campaign = instance
+    actor = campaign.user
+
+    # ✅ Notify unique fans only (not per participation row)
+    participant_ids = (
+        campaign.participations
+        .filter(fan__is_active=True)
+        .values_list("fan_id", flat=True)
+        .distinct()
+    )
+
+    # Optional but very good: DB-level dedupe so even if signal runs twice,
+    # we won't insert duplicate "has closed the campaign" notifications.
+    ct = ContentType.objects.get_for_model(Campaign)
+
+    existing_recipient_ids = set(
+        Notification.objects.filter(
+            actor=actor,
+            verb="has closed the campaign",
+            target_content_type=ct,
+            target_object_id=campaign.id,
+            recipient_id__in=participant_ids,
+        ).values_list("recipient_id", flat=True)
+    )
+
+    def _after_commit():
+        # built-in: set(...) membership is O(1) average
+        for fan in User.objects.filter(id__in=participant_ids).only("id", "username", "email"):
+            if fan.id in existing_recipient_ids:
+                continue
+
             push_notification(
                 actor=actor,
-                recipient=participation.fan,
+                recipient=fan,
                 verb="has closed the campaign",
                 target=campaign
             )
-        # Optionally, notify the influencer (self-notification might be optional)
+
+        # Optional self-notification
         push_notification(
             actor=actor,
             recipient=campaign.user,
             verb="your campaign is now closed",
             target=campaign
         )
+
+    # built-in: transaction.on_commit() runs after DB commit succeeds (prevents “ghost” notifs on rollback)
+    transaction.on_commit(_after_commit)
 
 @receiver(post_save, sender=CampaignWinner, dispatch_uid="campaign_winner_notify_v1")
 def notify_winner_selection(sender, instance, created, **kwargs):
