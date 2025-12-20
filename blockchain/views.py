@@ -49,6 +49,7 @@ from django.db import IntegrityError
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import transaction
 from blockchain.tasks import claim_guest_after_registration, _from_wei, sync_user_wallet_on_chain
+from django.db.models import Case, When, IntegerField
 
 logger = logging.getLogger(__name__)
 
@@ -679,6 +680,27 @@ class ConfirmDepositView(APIView):
             status=status.HTTP_201_CREATED
         )
         
+
+TERMINAL = {"confirmed", "failed"}
+
+def _apply_status(current: str, incoming: str) -> str:
+    """
+    Status rules:
+    - built-in set membership: 'in' checks if current is terminal
+    - once terminal, ignore non-terminal updates
+    """
+    if not incoming:
+        return current
+    if current in TERMINAL and incoming not in TERMINAL:
+        return current
+    # allow promotion (created->pending) and terminal wins
+    if incoming in TERMINAL:
+        return incoming
+    if current == "created" and incoming == "pending":
+        return "pending"
+    return current
+       
+
         
 @method_decorator(csrf_exempt, name='dispatch')
 class WertWebhookView(View):
@@ -735,113 +757,72 @@ class WertWebhookView(View):
             "tx_smart_contract_failed": "failed",
             # "test" → leave as "created" so we can see it but not count it
         }
-        new_status = status_map.get(evt_type)
+        incoming_status = status_map.get(evt_type)
         
         
         # Upsert WertOrder
-        from blockchain.models import WertOrder  # lazy import to avoid cycles
+        from blockchain.models import WertOrder, GuestOrder  # lazy import to avoid cycles
 
-        defaults = {
-            "click_id":       click_id,
-            "tx_id":          tx_id,
-            "raw":            payload,
-            "token_symbol":   base,
-            "token_network":  None,  # fill if you pass it into widget and it returns back
-            # Keep both fiat & asset numbers for reconciliation; guard Decimal conversions
-            "fiat_currency":  quote,
-            "fiat_amount":    Decimal(quote_amt) if quote_amt else None,
-            # token_amount_wei: leave None unless you convert base_amt to a canonical integer
-        }
-        if new_status:
-            defaults["status"] = new_status
+        with transaction.atomic():
+            # Prefer the row that already has order_id (if exists), else latest.
+            # Case/When are Django helpers; ordering ensures stable selection.
+            obj = (WertOrder.objects.select_for_update()
+                   .filter(click_id=str(click_id))
+                   .order_by(
+                        Case(
+                            When(order_id__isnull=False, then=0),
+                            default=1,
+                            output_field=IntegerField(),
+                        ),
+                        "-updated_at"
+                   )
+                   .first())
 
-        try:
-            if order_id:
-                obj, _ = WertOrder.objects.update_or_create(
-                    order_id=order_id, defaults=defaults
-                )
-            else:
-                # For “test” events with no order_id — use click_id as stable key
-                obj, created = WertOrder.objects.get_or_create(
-                    order_id=None, click_id=click_id, defaults=defaults
-                )
-                if not created:
-                    for k, v in defaults.items():
-                        setattr(obj, k, v)
-                    obj.save(update_fields=list(defaults.keys()))
+            if obj is None:
+                obj = WertOrder(click_id=str(click_id), status="created")
 
-        except Exception as e:
-            logger.exception("Failed to upsert WertOrder: %s", e)
-            # Acknowledge anyway so Wert doesn't retry storm
-            return JsonResponse({"ok": True, "stored": False})
-        
-        
-        # >>> INSERT THIS BLOCK HERE ↓↓↓
-        from blockchain.models import GuestOrder
+            # Update fields (setattr is built-in: sets attribute by name)
+            obj.raw = payload
+            obj.tx_id = tx_id
+            obj.token_symbol = order.get("base")
+            obj.fiat_currency = order.get("quote")
+            obj.fiat_amount = Decimal(order.get("quote_amount")) if order.get("quote_amount") else None
 
-        # 🔎 resolve GuestOrder first (FE is source of truth)
-        go = None
-        if click_id:
-            try: go = GuestOrder.objects.get(click_id=UUID(str(click_id)))
-            except (GuestOrder.DoesNotExist, ValueError):
-                go = None
-
-        # optional: some providers may echo back the ref
-        payload_ref = payload.get("ref")
-        if go is None and payload_ref:
-            go = GuestOrder.objects.filter(ref__iexact=str(payload_ref)).first()
-
-        # Build defaults and include ref if we know it
-        defaults = {
-            "click_id":      click_id,
-            "tx_id":         tx_id,
-            "raw":           payload,
-            "token_symbol":  order.get("base"),
-            "fiat_currency": order.get("quote"),
-            "fiat_amount":   Decimal(order.get("quote_amount")) if order.get("quote_amount") else None,
-            "ref":           (go.ref if go else None),  # ✅ keep ref in the order-id row
-        }
-        if new_status:
-            defaults["status"] = new_status
-
-        # 🧩 Merge with existing click_id row if present, else upsert by order_id
-        obj = WertOrder.objects.filter(click_id=str(click_id)).order_by('-updated_at').first()
-        if obj:
-            # update fields in-place
-            for k, v in defaults.items():
-                setattr(obj, k, v)
-            if order_id:
+            # attach order_id onto the SAME row once we learn it
+            if order_id and not obj.order_id:
                 obj.order_id = order_id
-            # choose minimal set of fields to persist
-            update_fields = list(defaults.keys()) + (["order_id"] if order_id else [])
-            obj.save(update_fields=update_fields)
-        else:
-            obj, _ = WertOrder.objects.update_or_create(
-                order_id=order_id or None,
-                defaults=defaults
-            )
 
-        # 🔄 Reflect status into GuestOrder (if we found it)
-        if go:
-            guest_map = {
-                "pending":   GuestOrder.Status.PENDING,
-                "confirmed": GuestOrder.Status.CONFIRMED,
-                "failed":    GuestOrder.Status.FAILED,
-            }
-            updates = []
-            if new_status in guest_map:
-                go.status = guest_map[new_status]; updates.append("status")
-            if order_id and not go.order_id:
-                go.order_id = order_id; updates.append("order_id")
-            if tx_id and not go.tx_hash:
-                go.tx_hash = tx_id; updates.append("tx_hash")
-            if updates:
-                go.save(update_fields=updates)
+            # monotonic status update (prevents confirmed->pending regression)
+            obj.status = _apply_status(obj.status, incoming_status)
 
-        # ✅ Enqueue ONCE, after both rows reflect "confirmed"
-        if new_status == "confirmed" and go and go.email:
-            from blockchain.tasks import notify_guest_claim_ready
-            notify_guest_claim_ready.delay(str(go.click_id))
+            obj.save()
+
+            # reflect into GuestOrder if it exists
+            go = None
+            if click_id:
+                try:
+                    go = GuestOrder.objects.select_for_update().get(click_id=UUID(str(click_id)))
+                except Exception:
+                    go = None
+
+            if go and incoming_status:
+                guest_map = {
+                    "pending":   GuestOrder.Status.PENDING,
+                    "confirmed": GuestOrder.Status.CONFIRMED,
+                    "failed":    GuestOrder.Status.FAILED,
+                }
+                if incoming_status in guest_map:
+                    go.status = guest_map[incoming_status]
+                if order_id and not go.order_id:
+                    go.order_id = order_id
+                if tx_id and not go.tx_hash:
+                    go.tx_hash = tx_id
+                go.save()
+
+                # notify only when confirmed; task itself is idempotent via claim_email_sent_at
+                if incoming_status == "confirmed" and go.email:
+                    from blockchain.tasks import notify_guest_claim_ready
+                    notify_guest_claim_ready.delay(str(go.click_id))
 
         return JsonResponse({"ok": True})
 
@@ -1262,8 +1243,9 @@ class GuestInitDepositView(APIView):
     authentication_classes = []
 
     def post(self, request):
-        
         data        = request.data
+
+        logger.error("GuestInitDepositView payload=%s", data)
         email       = (data.get("email") or "").strip() or None
         amount_raw  = data.get("amount")
         token_dec   = int(data.get("token_decimals") or 18)
@@ -1280,6 +1262,7 @@ class GuestInitDepositView(APIView):
 
         # ✅ REQUIRE click_id from FE (no fallback)
         cid = data.get("click_id")
+        
         if not cid:
             return Response({"error": "click_id is required"}, status=400)
         try:
