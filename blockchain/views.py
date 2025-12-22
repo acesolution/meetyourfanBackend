@@ -1395,14 +1395,20 @@ class GuestClaimView(APIView):
                 return Response({"code":"account_exists"}, status=409)
             user.save()
 
-        go.user = user
-        go.save(update_fields=["user"])
+        with transaction.atomic():
+            go.user = user
+            go.save(update_fields=["user"])
 
-        # 🚀 Kick the claim task after 30 seconds; it will retry until ready
-        transaction.on_commit(lambda: claim_guest_after_registration.apply_async(
-            kwargs={"click_id": str(go.click_id), "user_id": int(user.user_id)},
-            countdown=30
-        ))
+            vc, _created = VerificationCode.objects.get_or_create(user=user)
+            vc.email_verified = True
+            vc.email_code = None
+            vc.email_sent_at = timezone.now()
+            vc.save(update_fields=["email_verified", "email_code", "email_sent_at"])
+
+            transaction.on_commit(lambda: claim_guest_after_registration.apply_async(
+                kwargs={"click_id": str(go.click_id), "user_id": int(user.user_id)},
+                countdown=30
+            ))
 
         # ✅ Immediately issue auth back to FE; claim will complete async
         refresh = RefreshToken.for_user(user)
@@ -1422,7 +1428,7 @@ class GuestClaimView(APIView):
                 "username": user.username,
                 "user_type": getattr(user, "user_type", "fan"),         # ✅ NEW
                 "phone_number": getattr(user, "phone_number", None),
-                "is_email_verified": True,                             # or your real flag
+                "is_email_verified": vc.email_verified,                             # or your real flag
                 "is_phone_verified": False,
                 "profile": { "exists": True },                          # optional hint
             },
