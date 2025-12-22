@@ -183,10 +183,12 @@ class InfluencerTransaction(OnChainBase):
 class OnChainAction(OnChainBase):
     USER_REGISTERED     = 'user_registered'
     CAMPAIGN_REGISTERED = 'campaign_registered'
+    GUEST_CLAIMED       = 'guest_claimed'
     OTHER_OPERATION     = 'other'
     EVENT_CHOICES = [
         (USER_REGISTERED,     'User Registered'),
         (CAMPAIGN_REGISTERED, 'Campaign Registered'),
+        (GUEST_CLAIMED,       'Guest Claimed'),
         (OTHER_OPERATION,     'Other Operation'),
     ]
 

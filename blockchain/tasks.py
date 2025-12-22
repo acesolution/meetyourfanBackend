@@ -26,6 +26,16 @@ from django.core.mail import EmailMultiAlternatives
 
 FRONTEND_BASE_URL = getattr(settings, "FRONTEND_BASE_URL", "https://www.meetyourfan.io")
 
+def _already_recorded_tx(tx_hash: str) -> bool:
+    """
+    Idempotency guard: prevent duplicate Transaction rows.
+    - built-in bool(): converts query result into True/False
+    - .exists(): Django ORM optimized EXISTS query
+    """
+    tx_hash = _ensure_prefixed(tx_hash)
+    return bool(Transaction.objects.filter(tx_hash__iexact=tx_hash).exists())
+
+
 
 def _from_wei(value_wei: int, token_decimals: int = 18, places: int = 2) -> Decimal:
     """
@@ -794,39 +804,81 @@ def claim_guest_after_registration(self, click_id: str, user_id: int) -> str:
             "gas":      GAS_LIMIT,
             "gasPrice": w3.to_wei(GAS_PRICE_GWEI, "gwei"),
         }
+
+        # claimPending(ref, userId) is the contract function that moves pending TT -> user balances
         tx_hash = _build_and_send(
             contract.functions.claimPending(go.ref, int(user_id)),
             tx_params
         )
 
-        # Wait for mining (retry on timeout)
         try:
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+            # wait_for_transaction_receipt(): web3 call that blocks until mined or timeout
         except TimeExhausted as exc:
             raise self.retry(exc=exc)
 
         if receipt.status != 1:
             raise ContractLogicError("claimPending reverted")
 
-        # 4) Persist state and record the tx metadata
+        # ✅ Mark order as claimed
         go.status = GuestOrder.Status.CLAIMED
         go.save(update_fields=["status"])
+        # save(update_fields=...): Django built-in -> UPDATE only these columns
 
-        # Record the tx like other actions (will call fetch_tx_details under the hood)
-        # If you don't have a constant, use a string like "guest_claimed"
+        # ✅ Extract the actual amounts from the PendingClaimed event
+        # contract.events.PendingClaimed.process_receipt(...) decodes logs using ABI
+        claimed_events = contract.events.PendingClaimed().process_receipt(receipt)
+
+        if not claimed_events:
+            # Fallback: if for any reason logs are not decoded, retry once.
+            # built-in len(): returns number of items in list
+            raise self.retry(exc=RuntimeError("PendingClaimed event not found in receipt logs"))
+
+        ev = claimed_events[0]
+        wei_tt = int(ev.args.get("ttWei", 0))          # int(): built-in -> safely coerce to Python int
+        wei_cr = int(ev.args.get("creditsWei", 0))
+
+        # Convert Wei -> display units (2dp) for your Transaction table
+        tt_amount_dec = _from_wei(wei_tt, token_decimals=18, places=2)
+        cr_amount_dec = _from_wei(wei_cr, token_decimals=18, places=2)
+
+        # ✅ Record the claim as a DEPOSIT Transaction so FE balance (DB-based) updates
+        # Idempotency: do not double-insert if task retries
+        normalized_hash = _ensure_prefixed(tx_hash)
+        if not Transaction.objects.filter(tx_hash__iexact=normalized_hash).exists():
+            # .delay(): Celery built-in -> enqueue task async
+            save_transaction_info.delay(
+                normalized_hash,
+                go.user.id,                                  # DB user PK (NOT on-chain user_id)
+                go.campaign_id if go.campaign_id else None,  # optional campaign link
+                Transaction.DEPOSIT,
+                str(tt_amount_dec),                          # string so Decimal(str(..)) stays exact
+                str(cr_amount_dec),
+                tt_amount_wei=str(wei_tt),
+                credits_delta_wei=str(wei_cr),
+                wallet_address=None,                         # claim is executed by OWNER, not user wallet
+            )
+
+        # ✅ (Optional) also record an action row (your existing behavior)
         save_onchain_action_info.delay(
-            tx_hash,                      # tx hash from this claim
-            go.user_id,                 # user_id (on-chain id)
+            normalized_hash,
+            go.user.id,
             go.campaign_id if go.campaign_id else None,
-            getattr(OnChainAction, "GUEST_CLAIMED", "guest_claimed"),
+            "guest_claimed",   # see Patch 2 below to add this to choices
             {"ref": go.ref, "click_id": str(go.click_id)},
         )
 
-        return tx_hash
+        # ✅ (Optional) mark WertOrder as "claimed" for your dashboard/ops
+        try:
+            WertOrder.objects.filter(click_id=str(go.click_id)).update(status="claimed")
+            # .update(): Django ORM built-in -> SQL UPDATE without loading objects
+        except Exception:
+            logger.exception("Failed to mark WertOrder as claimed")
 
-    # If revert looks like "no pending" due to eventual consistency, retry
+        return normalized_hash
+
     except ContractLogicError as e:
-        msg = str(e).lower()
+        msg = str(e).lower()   # str.lower(): built-in string method
         if any(s in msg for s in ["pending", "not found", "no claim", "not funded"]):
             raise self.retry(exc=e)
         raise
