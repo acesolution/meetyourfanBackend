@@ -3,6 +3,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone              # built-in: timezone-aware now()
 from datetime import timedelta                 # built-in: represent "X seconds/minutes" time spans
+from django.db.models import Q
 
 class SocialProfile(models.Model):
     user = models.OneToOneField(
