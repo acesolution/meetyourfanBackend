@@ -1168,7 +1168,6 @@ class CoverFocalUpdateView(APIView):
             status=status.HTTP_200_OK
         )
 
-
 def create_username_reset_token(user) -> str:
     """
     Create a one-time username reset token for the given user.

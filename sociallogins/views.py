@@ -18,6 +18,9 @@ from api.models import Profile as UserProfile
 from rest_framework.response import Response
 from django.core import signing
 from django.core.signing import BadSignature, SignatureExpired
+from api.views import Profile
+from django.db import transaction
+from django.db.models import Q
 
 IG_STATE_SALT = "ig-oauth-state"
 
@@ -41,6 +44,28 @@ def is_ios(request) -> bool:
     return "iphone" in ua or "ipad" in ua or "ipod" in ua
 
 
+def disconnect_instagram(user) -> None:
+    """
+    Hard disconnect Instagram from this MYF user.
+
+    Clears:
+      - SocialProfile IG fields + token
+      - Profile.instagram_verified badge
+      - SocialMediaLink rows for IG (optional but recommended)
+    """
+    # update(): Django ORM built-in -> single SQL UPDATE (fast, no model save() signals)
+    SocialProfile.objects.filter(user=user).update(
+        ig_user_id=None,
+        ig_username=None,
+        ig_access_token=None,
+        ig_token_expires_at=None,
+    )
+
+    # Use all_objects because your default Profile manager hides inactive users.
+    # update(): built-in ORM update
+    Profile.all_objects.filter(user=user).update(instagram_verified=False)
+
+    
 
 # ---- OAUTH VIEWS ------------------------------------------------------------
 @api_view(["POST"])
@@ -181,29 +206,48 @@ def ig_login_callback(request):
         user = None
 
     if user is not None:
-        profile, _ = SocialProfile.objects.get_or_create(user=user)
-        profile.ig_user_id      = graph_user_id
-        profile.ig_username     = username
-        profile.ig_access_token = access_token
-        if expires_in:
-            profile.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
-        profile.save()
+        with transaction.atomic():
+            # atomic(): built-in Django transaction context manager (commit/rollback as a unit)
 
-        # mirror flag on Profile for the green tick
-        try:
-            user_profile = user.profile
-        except UserProfile.DoesNotExist:
-            user_profile = None
+            # Lock current user's social profile row (or create it) to avoid race conditions.
+            my_sp, _ = SocialProfile.objects.select_for_update().get_or_create(user=user)
+            # select_for_update(): DB row lock until transaction commits
 
-        if user_profile and user.user_type == "influencer":
-            user_profile.instagram_verified = True
-            user_profile.save()
+            # 1) Find any other MYF users who currently have this IG account linked
+            # Prefer ig_user_id (stable). Also guard by username (helps if ig_user_id missing).
+            conflicts = (
+                SocialProfile.objects
+                .select_for_update()
+                .select_related("user")
+                .filter(
+                    Q(ig_user_id=graph_user_id) |
+                    Q(ig_username__iexact=username)
+                )
+                .exclude(user=user)
+            )
 
-        logger.info(
-            "Updated SocialProfile for user_id=%s ig_username=%s",
-            user.id,
-            username,
-        )
+            # 2) Disconnect IG from conflicting users
+            for sp in conflicts:
+                disconnect_instagram(sp.user)
+
+            # 3) Attach IG to this user
+            my_sp.ig_user_id = graph_user_id
+            my_sp.ig_username = username
+            my_sp.ig_access_token = access_token
+            if expires_in:
+                # timedelta(seconds=...): built-in datetime helper for durations
+                my_sp.ig_token_expires_at = timezone.now() + timedelta(seconds=expires_in)
+            else:
+                my_sp.ig_token_expires_at = None
+            my_sp.save()
+
+            # 4) Mirror badge to Profile (only influencers, as you already do)
+            # Use all_objects to include inactive users if needed
+            if user.user_type == "influencer":
+                UserProfile.all_objects.filter(user=user).update(instagram_verified=bool(my_sp.is_instagram_verified))
+            else:
+                # if fans should never show verified, force False
+                UserProfile.all_objects.filter(user=user).update(instagram_verified=False)
 
     # --- 2d) success redirect to FE --------------------------------------
     redirect_url = (

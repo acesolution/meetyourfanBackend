@@ -10,7 +10,7 @@ class SocialProfile(models.Model):
         on_delete=models.CASCADE,
         related_name="social_profile",
     )
-    ig_user_id = models.CharField(max_length=64, blank=True, null=True)
+    ig_user_id = models.CharField(max_length=64, blank=True, null=True, unique=True)
     ig_username = models.CharField(max_length=150, blank=True, null=True)
 
     # store token + optional expiry
@@ -26,9 +26,25 @@ class SocialProfile(models.Model):
     @property
     def is_instagram_verified(self) -> bool:
         """
-        You consider someone verified if they have a valid IG connection.
+        Verified = has username + has token + token not expired (if expiry stored).
         """
-        return bool(self.ig_username and self.has_ig_token())
+        if not (self.ig_username and self.has_ig_token()):
+            return False
+
+        # timezone.now(): Django built-in helper returns timezone-aware datetime
+        if self.ig_token_expires_at and self.ig_token_expires_at <= timezone.now():
+            return False
+
+        return True
 
     def __str__(self):
         return f"{self.user} / @{self.ig_username or '—'}"
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ig_user_id"],
+                condition=Q(ig_user_id__isnull=False),
+                name="uniq_socialprofile_ig_user_id_not_null",
+            ),
+        ]
