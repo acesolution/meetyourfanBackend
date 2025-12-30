@@ -1323,7 +1323,7 @@ class FanSuggestedCampaignsView(ListAPIView):
         if getattr(user, "user_type", None) != "fan":
             raise PermissionDenied("Only fans can access suggested campaigns.")
 
-        now = dj_timezone.timezone.now()  # timezone.now(): Django helper that returns aware datetime (uses TIME_ZONE settings)
+        now = dj_timezone.now()  # timezone.now(): Django helper that returns aware datetime (uses TIME_ZONE settings)
 
         qs = (
             Campaign.objects
