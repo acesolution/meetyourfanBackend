@@ -604,3 +604,22 @@ class MediaAccessSerializer(serializers.ModelSerializer):
         if obj.media_file.preview_image:
             return request.build_absolute_uri(obj.media_file.preview_image.url)
         return None
+
+
+
+class SuggestedCampaignSerializer(serializers.ModelSerializer):
+    # read-only fields from queryset annotations
+    remaining_stock = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Campaign
+        fields = [
+            "id",
+            "title",
+            "campaign_type",
+            "deadline",
+            "is_closed",
+            "banner_image",
+            "remaining_stock",
+            "created_at",
+        ]

@@ -18,7 +18,8 @@ from .views import (
     MediaDisplayView,  # Add this import if not present
     AutoParticipateConfirmView,
     MyMediaFilesView,
-    UnifiedEngagementView
+    UnifiedEngagementView,
+    FanSuggestedCampaignsView,
 
 )
 
@@ -44,5 +45,6 @@ urlpatterns = [
     path('media-display/<int:media_id>/', MediaDisplayView.as_view(), name='media-display'),
     path("auto-participate/confirm/", AutoParticipateConfirmView.as_view(), name="auto-participate-confirm"),
     path("my/media/", MyMediaFilesView.as_view(), name="my-media"),
+    path("fan/suggested/", FanSuggestedCampaignsView.as_view(), name="fan-suggested-campaigns"),
 ]
 

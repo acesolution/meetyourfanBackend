@@ -9,10 +9,7 @@ from notificationsapp.models import ConversationMute
 from messagesapp.serializers import ConversationSerializer, MessageSerializer, UserSerializer, MeetupScheduleSerializer
 from django.contrib.auth import get_user_model
 from campaign.models import Campaign, Participation, CampaignWinner
-from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
-from rest_framework import serializers
-from django.db.models import Count
 from profileapp.models import BlockedUsers  # Import BlockedUsers model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -157,6 +154,7 @@ class ConversationListView(APIView):
             .prefetch_related('participants__profile')
             .order_by('-updated_at')
         )
+        
         restored_conversations = []
         for conv in conversations:
             deletion = conv.deletions.filter(user=request.user).first()

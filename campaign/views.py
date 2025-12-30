@@ -21,9 +21,10 @@ from .serializers import (
     UserCampaignSerializer,
     MediaAccessSerializer,
     AutoParticipateConfirmSerializer,
-    MediaFileSerializer
+    MediaFileSerializer,
+    SuggestedCampaignSerializer,
 )
-import random
+from campaign.pagination import SuggestedCampaignPagination
 from .models import (
     Campaign,
     Participation,
@@ -38,7 +39,6 @@ from .models import (
 )
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.db.models import Sum, Count, Q, Max
 from decimal import Decimal
 from django.conf import settings
 import logging
@@ -66,7 +66,6 @@ from campaign.cloudfront_signer import generate_cloudfront_signed_url
 from django.http import StreamingHttpResponse
 import boto3
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.decorators import parser_classes
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.http import HttpResponseRedirect
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -79,12 +78,13 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from django.utils import timezone as dj_timezone
 from web3.exceptions import TransactionNotFound
 from django.db.models.functions import TruncDate, Coalesce  # built-in: SQL DATE() & COALESCE(NULL, fallback)
-from django.db.models import Sum, Count, Q, Value, IntegerField  # built-in: aggregations & query helpers
+from django.db.models import Sum, Count, Case, When, F, Max, Q, Value, IntegerField  # built-in: aggregations & query helpers
 from decimal import Decimal
 from datetime import timedelta
 from campaign.signals import push_notification  # reuse your existing helper
 from django.contrib.contenttypes.models import ContentType  # ContentType: built-in model that stores model <-> id mapping
 from notificationsapp.models import Notification
+from rest_framework.exceptions import PermissionDenied
 
 User = get_user_model()
 
@@ -1300,3 +1300,76 @@ class MyMediaFilesView(ListAPIView):
 
         return qs
 
+
+
+
+class FanSuggestedCampaignsView(ListAPIView):
+    """
+    Returns suggested campaigns for a FAN:
+    - not closed
+    - not expired
+    - not sold out (tickets/media)
+    - paginated
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = SuggestedCampaignSerializer
+    pagination_class = SuggestedCampaignPagination
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Optional but recommended: only fans can use this endpoint
+        # (PermissionDenied is a DRF exception that returns 403)
+        if getattr(user, "user_type", None) != "fan":
+            raise PermissionDenied("Only fans can access suggested campaigns.")
+
+        now = timezone.now()  # timezone.now(): Django helper that returns aware datetime (uses TIME_ZONE settings)
+
+        qs = (
+            Campaign.objects
+            # Q objects allow composing complex conditions; here we keep it simple
+            .filter(is_closed=False, deadline__gt=now)
+            .exclude(user=user)  # don’t suggest user’s own campaigns
+            .exclude(participations__fan=user)  # optional: don’t suggest already-participated campaigns
+        )
+
+        # Sum(...) is a DB aggregate. Coalesce(..., 0) converts NULL -> 0.
+        # filter=... inside Sum is supported in modern Django; it sums only matching rows.
+        qs = qs.annotate(
+            paid_tickets_sold=Coalesce(
+                Sum(
+                    "participations__tickets_purchased",
+                    filter=Q(participations__is_free_entry=False),
+                ),
+                0,
+            ),
+        )
+
+        # Case/When builds a conditional SQL expression:
+        # - For ticket: remaining = total_tickets - paid_tickets_sold
+        # - For meet_greet: remaining = total_tickets - paid_tickets_sold
+        # - For media_selling: remaining = mediasellingcampaign.total_media (you already keep it as remaining)
+        qs = qs.annotate(
+            remaining_stock=Case(
+                When(
+                    campaign_type="ticket",
+                    then=F("ticketcampaign__total_tickets") - F("paid_tickets_sold"),
+                ),
+                When(
+                    campaign_type="meet_greet",
+                    then=F("meetandgreetcampaign__total_tickets") - F("paid_tickets_sold"),
+                ),
+                When(
+                    campaign_type="media_selling",
+                    then=F("mediasellingcampaign__total_media"),
+                ),
+                default=Value(0),  # Value() wraps a literal for the DB
+                output_field=IntegerField(),  # tells Django the result is an integer
+            )
+        )
+
+        # Filter out sold out campaigns (remaining <= 0)
+        qs = qs.filter(remaining_stock__gt=0)
+
+        # Suggested ordering (you can change to trending/likes later)
+        return qs.order_by("-created_at")
