@@ -44,7 +44,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Prevent connection if the user is blocked
         if await self.is_user_blocked():
             logger.error(f"User {self.user.username} is blocked and cannot join conversation {self.conversation_id}.")
-            await self.close()  # Reject connection for blocked users
+            await self.close(code=4003)  # Reject connection for blocked users
             return
 
         # Join the conversation group
@@ -149,6 +149,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not event_type:
                 await self.send(json.dumps({"error": "Event type is required."}))
                 return
+            
+            if await _is_blocked_either_way():
+                # send(): WebSocket built-in to send a JSON message to client
+                await self.send(json.dumps({"type": "blocked", "error": "Interaction blocked."}))
+                return
+
 
             if event_type == 'typing':
                 # Broadcast typing event
@@ -287,6 +293,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 "updated_at": str(timezone.now()),
                                 "unread_ids": unread_ids_for_uid,
                                 "is_muted": is_muted,  # <— NEW hint
+                                
                             },
                         )
 
@@ -444,6 +451,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'unread_ids': event.get('unread_ids', []),
             'is_muted': event.get('is_muted', False),          # NEW (you were sending it already)
             'active_meetup': event.get('active_meetup', None), # NEW (for meetup UI sync)
+            'is_blocked': event.get('is_blocked', None),
+            'blocked_by_id': event.get('blocked_by_id', None),
         }))
         
     @sync_to_async
@@ -488,7 +497,9 @@ class ConversationUpdatesConsumer(AsyncWebsocketConsumer):
             'updated_at': event['updated_at'],
             'unread_ids': event.get('unread_ids', []),
             'is_muted': event.get('is_muted', False),          # NEW (you were sending it already)
-        'active_meetup': event.get('active_meetup', None), # NEW (for meetup UI sync)
+            'active_meetup': event.get('active_meetup', None), # NEW (for meetup UI sync)
+            'is_blocked': event.get('is_blocked', None),
+            'blocked_by_id': event.get('blocked_by_id', None),
         }))
 
 

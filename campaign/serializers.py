@@ -555,7 +555,7 @@ class PolymorphicCampaignDetailSerializer(serializers.Serializer):
     def get_total_media_sold(self, obj):
         if obj.campaign_type == 'media_selling':
             return sum((p.media_purchased or 0) for p in obj.participations.filter(is_free_entry=False))
-        return 
+        return
     
     def get_winners_count(self, obj):
         # if campaign isn’t closed yet, show 0

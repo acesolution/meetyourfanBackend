@@ -22,6 +22,7 @@ from asgiref.sync import async_to_sync
 import json
 from api.models import Profile
 from messagesapp.serializers import MeetupInlineSerializer
+from profileapp.models import Follower, FollowRequest
 
 User = get_user_model()
 
@@ -141,6 +142,80 @@ def _emit_chat_like_event(*, conversation: Conversation, message: Message, reque
                 "active_meetup": active_meetup_payload,  # NEW: let FE update meetup banner without refetch
             },
         )
+        
+def _is_private_profile(u) -> bool:
+    """
+    Return True if user's profile exists and is private.
+    - getattr(): built-in safe attribute access with default
+    """
+    p = getattr(u, "profile", None)
+    return bool(p and getattr(p, "status", None) == "private")
+
+
+def _is_follower(*, follower_user, target_user) -> bool:
+    """
+    True if follower_user is an approved follower of target_user.
+    - exists(): ORM built-in optimized EXISTS query
+    """
+    return Follower.objects.filter(user=target_user, follower=follower_user).exists()
+
+
+def _has_pending_follow_request(*, sender, receiver) -> bool:
+    """
+    True if sender has a pending follow request to receiver.
+    """
+    return FollowRequest.objects.filter(sender=sender, receiver=receiver, status="pending").exists()
+
+
+def _block_state_between(me_id: int, other_id: int):
+    """
+    Returns (is_blocked, blocked_by_id, i_blocked, they_blocked)
+
+    - Q(...): Django ORM helper for OR conditions
+    - values_list(...): ORM built-in that returns tuples instead of model instances
+    """
+    rows = list(
+        BlockedUsers.objects.filter(
+            Q(blocker_id=me_id, blocked_id=other_id) |
+            Q(blocker_id=other_id, blocked_id=me_id)
+        ).values_list("blocker_id", "blocked_id")
+    )
+
+    # compute booleans from returned rows
+    i_blocked = any(b == me_id and blk == other_id for (b, blk) in rows)
+    they_blocked = any(b == other_id and blk == me_id for (b, blk) in rows)
+
+    is_blocked = i_blocked or they_blocked
+
+    # pick a single "blocked_by_id" for UI (if both blocked, prefer "me" so UI offers Unblock)
+    blocked_by_id = me_id if i_blocked else (other_id if they_blocked else None)
+
+    return is_blocked, blocked_by_id, i_blocked, they_blocked
+
+
+def _emit_block_state(conversation_id: int, user_ids: list[int], *, is_blocked: bool, blocked_by_id: int | None):
+    """
+    Push block state through the existing 'conversation_update' stream.
+
+    - get_channel_layer(): Channels built-in, returns configured channel layer
+    - group_send(): Channels built-in, sends event to a group (here: user_<id>)
+    """
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    payload = {
+        "type": "conversation_update",
+        "conversation_id": conversation_id,
+        "last_message": None,                    # keep stable ordering; FE ignores if None
+        "updated_at": timezone.now().isoformat(),
+        "unread_ids": [],                        # optional; FE already handles empty list
+        "is_blocked": is_blocked,                # ✅ NEW
+        "blocked_by_id": blocked_by_id,          # ✅ NEW
+    }
+
+    for uid in user_ids:
+        async_to_sync(channel_layer.group_send)(f"user_{uid}", payload)
 
 class ConversationListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -199,6 +274,23 @@ class CreateConversationView(APIView):
         )
         if not participants:
             return Response({"error": "Invalid participants."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # ✅ PRIVATE PROFILE DM GATE (1-to-1 only, non-campaign chat)
+        # If target is private, user must be an approved follower before starting a DM.
+        # This matches your frontend "Message button" behavior.
+        if not campaign_id and len(participants) == 1:
+            target = participants[0]
+
+            if _is_private_profile(target) and not _is_follower(follower_user=user, target_user=target):
+                if _has_pending_follow_request(sender=user, receiver=target):
+                    return Response(
+                        {"error": "This account is private. Your follow request is pending approval."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                return Response(
+                    {"error": "This account is private. Follow request must be accepted before messaging."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         # Block checks (exists() -> built-in optimized EXISTS query)
         for participant in participants:
@@ -359,6 +451,7 @@ class ConversationParticipantsView(APIView):
         serializer = UserSerializer(participants, many=True, context={'request': request})
         return Response(serializer.data, status=200)
     
+    
 class DeleteConversationView(APIView):
     """
     Marks a conversation as deleted (hidden) for the logged-in user.
@@ -433,6 +526,11 @@ class BlockPeerView(APIView):
 
         # Prevent duplicate rows; built-in get_or_create() returns (obj, created_bool)
         BlockedUsers.objects.get_or_create(blocker=request.user, blocked=peer)
+        
+        # Compute final state and notify both sides
+        is_blocked, blocked_by_id, _, _ = _block_state_between(request.user.id, peer.id)
+        _emit_block_state(conv.id, [request.user.id, peer.id], is_blocked=is_blocked, blocked_by_id=blocked_by_id)
+
         return Response({'ok': True})
 
 
@@ -446,6 +544,11 @@ class UnblockPeerView(APIView):
             return peer
 
         BlockedUsers.objects.filter(blocker=request.user, blocked=peer).delete()
+        
+         # ✅ Important: convo may STILL be blocked if peer blocked me
+        is_blocked, blocked_by_id, _, _ = _block_state_between(request.user.id, peer.id)
+        _emit_block_state(conv.id, [request.user.id, peer.id], is_blocked=is_blocked, blocked_by_id=blocked_by_id)
+        
         return Response({'ok': True})
 
 
