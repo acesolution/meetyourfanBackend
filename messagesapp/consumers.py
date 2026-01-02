@@ -46,6 +46,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.error(f"User {self.user.username} is blocked and cannot join conversation {self.conversation_id}.")
             await self.close(code=4003)  # Reject connection for blocked users
             return
+        
+        # inside connect(), after is_user_part_of_conversation()
+        if await self.is_blocked_either_way():
+            await self.close(code=4003)
+            return
+
 
         # Join the conversation group
         await self.channel_layer.group_add(
@@ -139,6 +145,33 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def set_message_status_delivered(self, message_id: int):
         Message.objects.filter(id=message_id).update(status="delivered")
+    
+    @sync_to_async
+    def is_blocked_either_way(self) -> bool:
+        """
+        True if either side blocked the other (1:1 only).
+        - Conversation.objects.get(): ORM built-in, fetches a single row or raises DoesNotExist
+        - values_list(..., flat=True): ORM built-in, returns a simple Python list of IDs
+        - exists(): ORM built-in, fast "does any row match?"
+        """
+        conv = Conversation.objects.get(id=self.conversation_id)
+
+        other_ids = list(
+            conv.participants
+                .exclude(id=self.user.id)
+                .values_list("id", flat=True)
+        )
+
+        # Only enforce 1:1 block logic here
+        if len(other_ids) != 1:
+            return False
+
+        other_id = other_ids[0]
+
+        return BlockedUsers.objects.filter(
+            models.Q(blocker_id=other_id, blocked_id=self.user.id) |   # they blocked me
+            models.Q(blocker_id=self.user.id, blocked_id=other_id)     # I blocked them
+        ).exists()
 
     async def receive(self, text_data):
         """Handle incoming WebSocket messages."""
@@ -149,12 +182,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not event_type:
                 await self.send(json.dumps({"error": "Event type is required."}))
                 return
-            
-            if await _is_blocked_either_way():
-                # send(): WebSocket built-in to send a JSON message to client
-                await self.send(json.dumps({"type": "blocked", "error": "Interaction blocked."}))
-                return
-
 
             if event_type == 'typing':
                 # Broadcast typing event
@@ -208,23 +235,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         )
 
             elif event_type == 'message':
-                # deny if any party blocked the other
-                @sync_to_async
-                def _is_blocked_either_way():
-                    from profileapp.models import BlockedUsers
-                    conv = Conversation.objects.get(id=self.conversation_id)
-                    # built-in values_list(): SELECT ... returns simple lists/tuples
-                    others = list(conv.participants.exclude(id=self.user.id).values_list('id', flat=True))
-                    if len(others) != 1:
-                        return False
-                    other_id = others[0]
-                    return BlockedUsers.objects.filter(
-                        models.Q(blocker_id=other_id, blocked=self.user) |
-                        models.Q(blocker=self.user, blocked_id=other_id)
-                    ).exists()
-
-                if await _is_blocked_either_way():
-                    await self.send(json.dumps({"error": "Interaction blocked."}))
+                
+                if await self.is_blocked_either_way():
+                    await self.send(json.dumps({"type": "blocked", "error": "Interaction blocked."}))
                     return
                 # Handle chat message
                 content = data.get('content')
@@ -293,7 +306,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 "updated_at": str(timezone.now()),
                                 "unread_ids": unread_ids_for_uid,
                                 "is_muted": is_muted,  # <— NEW hint
-                                
                             },
                         )
 
