@@ -221,7 +221,6 @@ class ConversationListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get all conversations that include the current user.
         conversations = (
             Conversation.objects
             .filter(participants=request.user)
@@ -229,22 +228,84 @@ class ConversationListView(APIView):
             .prefetch_related('participants__profile')
             .order_by('-updated_at')
         )
-        
+
         restored_conversations = []
         for conv in conversations:
             deletion = conv.deletions.filter(user=request.user).first()
             if deletion:
-                # If a deletion record exists, check for a message sent after the deletion time.
                 last_message = conv.messages.order_by('-created_at').first()
                 if last_message and last_message.created_at > deletion.deleted_at:
                     restored_conversations.append(conv)
-                # Otherwise, the conversation remains hidden.
             else:
-                # No deletion record means the conversation is visible.
                 restored_conversations.append(conv)
-        serializer = ConversationSerializer(restored_conversations, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
 
+        # ✅ Build {conversation_id -> peer_id} using prefetched participants (no extra DB hit)
+        conv_to_peer = {}
+        peer_ids = []
+        me_id = request.user.id
+
+        for conv in restored_conversations:
+            # conv.participants.all() uses prefetch cache if present
+            ids = [u.id for u in conv.participants.all()]
+            others = [uid for uid in ids if uid != me_id]
+            if len(others) == 1:
+                conv_to_peer[conv.id] = others[0]
+                peer_ids.append(others[0])
+
+        # ✅ Fetch all block rows between me and any peer in one query
+        block_rows = list(
+            BlockedUsers.objects.filter(
+                Q(blocker_id=me_id, blocked_id__in=peer_ids) |
+                Q(blocked_id=me_id, blocker_id__in=peer_ids)
+            )
+            .values("blocker_id", "blocked_id", "created_at")
+        )
+
+        # ✅ Keep the latest block row per peer (created_at is your model field)
+        latest_by_peer = {}
+        for r in block_rows:
+            blocker_id = r["blocker_id"]
+            blocked_id = r["blocked_id"]
+            created_at = r["created_at"]
+
+            peer_id = blocked_id if blocker_id == me_id else blocker_id
+            prev = latest_by_peer.get(peer_id)
+
+            # built-in: dict.get() returns None if missing
+            if (not prev) or (created_at and created_at > prev["created_at"]):
+                latest_by_peer[peer_id] = {
+                    "created_at": created_at,
+                    "blocked_by_id": blocker_id,  # the actual blocker user id
+                }
+
+        # ✅ Map final block state per conversation
+        block_by_conv = {}
+        for conv_id, peer_id in conv_to_peer.items():
+            info = latest_by_peer.get(peer_id)
+            if info:
+                blocked_by_id = info["blocked_by_id"]
+                block_by_conv[conv_id] = {
+                    "is_blocked": True,
+                    "blocked_by_id": blocked_by_id,
+                    "blocked_by_me": (blocked_by_id == me_id),
+                }
+            else:
+                block_by_conv[conv_id] = {
+                    "is_blocked": False,
+                    "blocked_by_id": None,
+                    "blocked_by_me": False,
+                }
+
+        serializer = ConversationSerializer(
+            restored_conversations,
+            many=True,
+            context={
+                "request": request,
+                "block_by_conv": block_by_conv,  # ✅ pass to serializer
+            }
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
 def _make_signature(user_ids):
     """
     Create a stable signature for a set of user IDs.

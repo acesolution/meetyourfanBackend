@@ -92,6 +92,8 @@ class ConversationSerializer(serializers.ModelSerializer):
     campaign = CampaignBasicSerializer(read_only=True)
     is_blocked = serializers.SerializerMethodField()    
     active_meetup = serializers.SerializerMethodField() 
+    blocked_by_id = serializers.SerializerMethodField()
+    blocked_by_me = serializers.SerializerMethodField()
     
     class Meta:
         model = Conversation
@@ -107,6 +109,8 @@ class ConversationSerializer(serializers.ModelSerializer):
             'unread_ids',
             'is_blocked',
             'active_meetup',
+            "blocked_by_id",   #  NEW
+            "blocked_by_me",   #  NEW (this equals your old meaning)
         )
         
     def get_unread_message_count(self, obj):
@@ -172,21 +176,73 @@ class ConversationSerializer(serializers.ModelSerializer):
 
         return data
     
+    def _block_ctx(self, obj):
+        """
+        Pull from context if available (fast path).
+        built-in dict.get(): returns None if key missing
+        """
+        m = self.context.get("block_by_conv") or {}
+        return m.get(obj.id)
+
     def get_is_blocked(self, obj):
-        """
-        True if *request.user* has blocked the peer (only meaningful for 1:1).
-        built-in queryset .exists(): SELECT 1 WHERE ... LIMIT 1
-        """
-        request = self.context.get('request')
+        request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return False
-        # For 1:1, peer = the "other" participant
-        others = obj.participants.exclude(id=request.user.id)
-        if others.count() != 1:
-            return False
-        peer = others.first()
-        return BlockedUsers.objects.filter(blocker=request.user, blocked=peer).exists()
 
+        ctx = self._block_ctx(obj)
+        if ctx is not None:
+            return bool(ctx["is_blocked"])
+
+        # fallback (single-conversation endpoints etc.)
+        ids = [u.id for u in obj.participants.all()]
+        others = [uid for uid in ids if uid != request.user.id]
+        if len(others) != 1:
+            return False
+        peer_id = others[0]
+
+        return BlockedUsers.objects.filter(
+            Q(blocker_id=request.user.id, blocked_id=peer_id) |
+            Q(blocker_id=peer_id, blocked_id=request.user.id)
+        ).exists()  # exists() is ORM built-in: SELECT 1 ... LIMIT 1
+
+    def get_blocked_by_id(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+
+        ctx = self._block_ctx(obj)
+        if ctx is not None:
+            return ctx["blocked_by_id"]
+
+        ids = [u.id for u in obj.participants.all()]
+        others = [uid for uid in ids if uid != request.user.id]
+        if len(others) != 1:
+            return None
+        peer_id = others[0]
+
+        row = (BlockedUsers.objects.filter(
+            Q(blocker_id=request.user.id, blocked_id=peer_id) |
+            Q(blocker_id=peer_id, blocked_id=request.user.id)
+        )
+        .order_by("-created_at")  # latest action wins
+        .values("blocker_id")
+        .first())  # first() is ORM built-in: returns first row or None
+
+        return row["blocker_id"] if row else None
+
+    def get_blocked_by_me(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return False
+
+        ctx = self._block_ctx(obj)
+        if ctx is not None:
+            return bool(ctx["blocked_by_me"])
+
+        blocked_by_id = self.get_blocked_by_id(obj)
+        return bool(blocked_by_id and blocked_by_id == request.user.id)
+    
+    
     def get_active_meetup(self, obj):
         """
         Return the currently relevant meetup (pending or accepted) between the

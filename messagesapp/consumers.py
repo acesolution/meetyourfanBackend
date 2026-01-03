@@ -40,12 +40,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.error(f"User {self.user.username} is not part of conversation {self.conversation_id}.")
             await self.close()  # Reject unauthorized access
             return
-
-        # Prevent connection if the user is blocked
-        if await self.is_user_blocked():
-            logger.error(f"User {self.user.username} is blocked and cannot join conversation {self.conversation_id}.")
-            await self.close(code=4003)  # Reject connection for blocked users
-            return
         
         # inside connect(), after is_user_part_of_conversation()
         if await self.is_blocked_either_way():
